@@ -41,7 +41,7 @@ mvn -Psample-db process-test-resources
 Both paths run the same script, `src/test/resources/db/sales-db.sql`, and drop and recreate everything each time. To run the sample server against it:
 
 ```sh
-export SALES_DB_URL="jdbc:h2:file:$PWD/target/test-db/sales"
+export SALES_DB_URL="jdbc:h2:file:$PWD/target/test-db/sales;AUTO_SERVER=TRUE"
 export SALES_DB_USER=MCP_READER SALES_DB_PASSWORD=reader
 
 # check the definition against the database
@@ -61,7 +61,7 @@ Claude Desktop / Claude Code (`mcpServers`):
       "args": ["-jar", "/path/to/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar",
                "--definition", "/path/to/EclipseLink-MCP/samples/sales-db"],
       "env": {
-        "SALES_DB_URL": "jdbc:h2:file:/path/to/EclipseLink-MCP/target/test-db/sales",
+        "SALES_DB_URL": "jdbc:h2:file:/path/to/EclipseLink-MCP/target/test-db/sales;AUTO_SERVER=TRUE",
         "SALES_DB_USER": "MCP_READER",
         "SALES_DB_PASSWORD": "reader"
       }
@@ -69,6 +69,10 @@ Claude Desktop / Claude Code (`mcpServers`):
   }
 }
 ```
+
+Use the full path of the JAR that `mvn package` built (`target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar`); the client reports "Unable to access jarfile" otherwise.
+
+**Several copies of the server.** MCP clients may start more than one copy of a server: Claude Desktop starts one for its chat and more for Cowork and Claude Code sessions. Each copy is its own process, and an embedded H2 file database can be opened by only one process at a time. `;AUTO_SERVER=TRUE` lets them share it: the first process serves the file on a local port and the others connect through it with the same user and password, including the read-only `MCP_READER` account. If the first one exits, the others carry on. Without it, every copy after the first stops with "The H2 database file is in use by another process ... Add ;AUTO_SERVER=TRUE". `init` adds it to H2 file URLs it writes. Client/server databases (PostgreSQL, Oracle and so on) need nothing extra.
 
 ### JDBC drivers
 
@@ -88,7 +92,7 @@ The definition never holds a password. It refers to one: `${env:SALES_DB_PASSWOR
 
 ```sh
 DB_PW=reader java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar init \
-  --url jdbc:h2:file:$PWD/target/test-db/sales --user MCP_READER --password-env DB_PW \
+  --url "jdbc:h2:file:$PWD/target/test-db/sales;AUTO_SERVER=TRUE" --user MCP_READER --password-env DB_PW \
   --table ORDERS --follow-fks 1 --fk-direction both --out /tmp/sales-gen
 ```
 

@@ -36,7 +36,8 @@ public final class TestDatabase {
 
     public static final Path SAMPLE_DEFINITION = Path.of("samples/sales-db");
     public static final Path FILE = Path.of("target/test-db/sales").toAbsolutePath();
-    public static final String URL = "jdbc:h2:file:" + FILE.toString().replace('\\', '/');
+    /** AUTO_SERVER lets other processes (e.g. a server started from the README) share the file. */
+    public static final String URL = "jdbc:h2:file:" + FILE.toString().replace('\\', '/') + ";AUTO_SERVER=TRUE";
     public static final String READER_USER = "MCP_READER";
     public static final String READER_PASSWORD = "reader";
 

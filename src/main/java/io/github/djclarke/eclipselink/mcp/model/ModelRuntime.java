@@ -108,7 +108,10 @@ public final class ModelRuntime implements AutoCloseable {
         props.put(PersistenceUnitProperties.QUERY_TIMEOUT_UNIT, "MILLISECONDS");
         // stdout belongs to the MCP stdio transport, so EclipseLink must log through java.util.logging (stderr).
         props.put(PersistenceUnitProperties.LOGGING_LOGGER, "JavaLogger");
-        props.put(PersistenceUnitProperties.LOGGING_LEVEL, "WARNING");
+        // Logging is off while deploying: a failed start is reported once, briefly, by the caller, where
+        // EclipseLink would log a stack trace to stderr. It is set to WARNING once the model is up.
+        props.put(PersistenceUnitProperties.LOGGING_LEVEL, "OFF");
+        props.put(PersistenceUnitProperties.LOGGING_EXCEPTIONS, "false");
 
         Path root = definition.directory();
         String mappingFile = root.relativize(definition.mappingsFile()).toString().replace('\\', '/');
@@ -122,10 +125,11 @@ public final class ModelRuntime implements AutoCloseable {
             em.close();
         } catch (PersistenceException | org.eclipse.persistence.exceptions.EclipseLinkException e) {
             closeQuietly(resourceLoader);
-            throw new DefinitionException("Could not build the model from " + mappingFile + ": " + rootMessage(e), e);
+            throw new DefinitionException(startupFailure(d.connection().url(), mappingFile, e), e);
         }
 
         Server session = JpaHelper.getServerSession(emf);
+        session.getSessionLog().setLevel(org.eclipse.persistence.logging.SessionLog.WARNING);
         Map<String, ClassDescriptor> entities = new TreeMap<>();
         for (ClassDescriptor descriptor : session.getDescriptors().values()) {
             if (descriptor.isAggregateDescriptor() || descriptor.getAlias() == null) {
@@ -179,6 +183,33 @@ public final class ModelRuntime implements AutoCloseable {
         }
         closeQuietly(resourceLoader);
         drivers.close();
+    }
+
+    /** A short message for a failed start, with a hint for the common H2 "file in use" case. */
+    static String startupFailure(String url, String mappingFile, Throwable e) {
+        String root = rootMessage(e);
+        if (H2Urls.isEmbeddedFile(url) && fileInUse(e)) {
+            return "The H2 database file is in use by another process, such as another copy of this server "
+                    + "(MCP clients may start several)."
+                    + (H2Urls.hasAutoServer(url) ? " Every process opening it must use ;AUTO_SERVER=TRUE."
+                    : " Add ;AUTO_SERVER=TRUE to the JDBC URL so they can share it, e.g. "
+                    + "jdbc:h2:file:/path/to/db;AUTO_SERVER=TRUE");
+        }
+        if (root.contains("\n")) {
+            root = root.substring(0, root.indexOf('\n')).strip();
+        }
+        return "Could not start the model from " + mappingFile + ": " + root;
+    }
+
+    /** H2's "Database may be already in use" (90020), or its cause "The file is locked". */
+    private static boolean fileInUse(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            String m = String.valueOf(t.getMessage());
+            if (m.contains("90020") || m.contains("already in use") || m.contains("file is locked")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String rootMessage(Throwable t) {
