@@ -118,4 +118,44 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+          Builds only the sample "existing" database used by samples/sales-db and the tests, without running
+          the tests: mvn -Psample-db process-test-resources
+          It is an H2 file at target/test-db/sales with a read-only MCP_READER account (password: reader).
+          The tests rebuild the same database (TestDatabase), so both paths give identical data.
+        -->
+        <profile>
+            <id>sample-db</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.6.3</version>
+                        <executions>
+                            <execution>
+                                <id>create-sample-db</id>
+                                <phase>process-test-resources</phase>
+                                <goals><goal>java</goal></goals>
+                                <configuration>
+                                    <mainClass>org.h2.tools.RunScript</mainClass>
+                                    <classpathScope>test</classpathScope>
+                                    <arguments>
+                                        <argument>-url</argument>
+                                        <argument>jdbc:h2:file:${project.build.directory}/test-db/sales</argument>
+                                        <argument>-user</argument>
+                                        <argument>sa</argument>
+                                        <argument>-script</argument>
+                                        <argument>${project.build.testOutputDirectory}/db/sales-db.sql</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

@@ -30,7 +30,13 @@ Requires Java 21 and Maven.
 mvn package          # builds target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar and runs the tests
 ```
 
-The tests create the sample "existing" database, an H2 file at `target/test-db/sales` with customers, products, orders and order lines, plus a read-only `MCP_READER` account. To run the sample server against it:
+The tests create the sample "existing" database, an H2 file at `target/test-db/sales` with customers, products, orders and order lines, plus a read-only `MCP_READER` account. To build or reset just that database, without running the tests:
+
+```sh
+mvn -Psample-db process-test-resources
+```
+
+Both paths run the same script, `src/test/resources/db/sales-db.sql`, and drop and recreate everything each time. To run the sample server against it:
 
 ```sh
 export SALES_DB_URL="jdbc:h2:file:$PWD/target/test-db/sales"
