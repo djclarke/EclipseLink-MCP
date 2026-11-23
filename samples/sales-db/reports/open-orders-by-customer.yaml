@@ -1,0 +1,24 @@
+name: open_orders_by_customer
+title: Open orders by customer
+description: Customers with open orders, with the number and value of those orders, optionally for one region.
+root: Order
+select:
+  - path: customer.name
+    as: customer
+  - path: customer.region
+    as: region
+  - aggregate: count
+    path: id
+    as: openOrders
+  - aggregate: sum
+    path: total
+    as: openValue
+filter:
+  and:
+    - { path: status, op: eq, value: OPEN }
+    - { path: customer.region, op: eq, param: region }
+groupBy: [customer.name, customer.region]
+orderBy:
+  - { by: openValue, dir: desc }
+parameters:
+  region: { type: string, required: false, description: "Optional region filter: EAST, WEST or NORTH" }

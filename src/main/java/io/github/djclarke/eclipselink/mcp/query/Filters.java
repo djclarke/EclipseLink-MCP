@@ -1,0 +1,176 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.query;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.eclipse.persistence.descriptors.ClassDescriptor;
+import org.eclipse.persistence.expressions.Expression;
+
+import io.github.djclarke.eclipselink.mcp.tools.ToolException;
+
+/**
+ * The structured filter grammar shared by {@code query_entities} and named reports
+ * (docs/server-definition.md section 4.3):
+ *
+ * <pre>
+ * node := { "and": [node...] } | { "or": [node...] } | { "not": node } | leaf
+ * leaf := { "path": "customer.region", "op": "eq", "value": ... }    (or "param": "name" in reports)
+ * </pre>
+ *
+ * Filters become EclipseLink expressions; values are always bound as query parameters, never concatenated
+ * into SQL.
+ */
+public final class Filters {
+
+    /** Supplies values for {@code param} leaves. Returns {@link #ABSENT} for an optional parameter not given. */
+    public interface ParameterValues {
+        Object value(String name);
+    }
+
+    public static final Object ABSENT = new Object();
+
+    private static final Set<String> OPS = Set.of(
+            "eq", "ne", "lt", "le", "gt", "ge", "in", "notIn", "like", "isNull", "isNotNull", "between");
+
+    private Filters() {
+    }
+
+    /**
+     * @param params null when {@code param} leaves are not allowed (ad hoc queries)
+     * @param pathsUsed collects every resolved path, so callers can check e.g. collection traversal
+     * @return the expression, or null when the filter is empty
+     */
+    public static Expression toExpression(Object node, ClassDescriptor root, Expression base, Set<String> outerJoins,
+                                          ParameterValues params, List<AttributePath> pathsUsed) {
+        if (node == null) {
+            return null;
+        }
+        if (!(node instanceof Map<?, ?> map)) {
+            throw invalid("Each filter node must be an object");
+        }
+        if (map.containsKey("and") || map.containsKey("or")) {
+            boolean and = map.containsKey("and");
+            Object children = map.get(and ? "and" : "or");
+            if (map.size() != 1 || !(children instanceof Collection<?> list)) {
+                throw invalid("'" + (and ? "and" : "or") + "' must be the only key and hold a list");
+            }
+            Expression result = null;
+            for (Object child : list) {
+                Expression e = toExpression(child, root, base, outerJoins, params, pathsUsed);
+                if (e != null) {
+                    result = result == null ? e : (and ? result.and(e) : result.or(e));
+                }
+            }
+            return result;
+        }
+        if (map.containsKey("not")) {
+            if (map.size() != 1) {
+                throw invalid("'not' must be the only key");
+            }
+            Expression e = toExpression(map.get("not"), root, base, outerJoins, params, pathsUsed);
+            return e == null ? null : e.not();
+        }
+        return leaf(map, root, base, outerJoins, params, pathsUsed);
+    }
+
+    private static Expression leaf(Map<?, ?> leaf, ClassDescriptor root, Expression base, Set<String> outerJoins,
+                                   ParameterValues params, List<AttributePath> pathsUsed) {
+        for (Object key : leaf.keySet()) {
+            if (!Set.of("path", "op", "value", "param").contains(key)) {
+                throw invalid("Unknown filter key '" + key + "'; use path, op and value");
+            }
+        }
+        Object pathText = leaf.get("path");
+        Object opValue = leaf.get("op");
+        if (!(pathText instanceof String) || !(opValue instanceof String op)) {
+            throw invalid("A filter condition needs 'path' and 'op' strings");
+        }
+        if (!OPS.contains(op)) {
+            throw invalid("Unknown operator '" + op + "'; use one of " + String.join(", ", OPS.stream().sorted().toList()));
+        }
+        AttributePath path = AttributePath.resolve(root, (String) pathText);
+        if (!path.isBasic()) {
+            throw invalid("'" + pathText + "' is a relationship; filter on one of its attributes, e.g. "
+                    + pathText + "." + firstKey(path));
+        }
+        pathsUsed.add(path);
+
+        Object raw;
+        if (leaf.containsKey("param")) {
+            if (params == null) {
+                throw invalid("'param' is only allowed in report definitions; use 'value'");
+            }
+            raw = params.value(String.valueOf(leaf.get("param")));
+            if (raw == ABSENT) {
+                return null; // optional parameter not supplied: drop this condition
+            }
+        } else {
+            raw = leaf.get("value");
+        }
+
+        Expression attr = path.toExpression(base, outerJoins);
+        Class<?> type = path.type();
+        String p = path.text();
+        return switch (op) {
+            case "eq" -> attr.equal(Mappings.convert(required(raw, p, op), type, p));
+            case "ne" -> attr.notEqual(Mappings.convert(required(raw, p, op), type, p));
+            case "lt" -> attr.lessThan(Mappings.convert(required(raw, p, op), type, p));
+            case "le" -> attr.lessThanEqual(Mappings.convert(required(raw, p, op), type, p));
+            case "gt" -> attr.greaterThan(Mappings.convert(required(raw, p, op), type, p));
+            case "ge" -> attr.greaterThanEqual(Mappings.convert(required(raw, p, op), type, p));
+            case "like" -> attr.like(String.valueOf(required(raw, p, op)));
+            case "isNull" -> attr.isNull();
+            case "isNotNull" -> attr.notNull();
+            case "in" -> attr.in(convertList(raw, type, p, op));
+            case "notIn" -> attr.notIn(convertList(raw, type, p, op));
+            case "between" -> {
+                List<Object> v = convertList(raw, type, p, op);
+                if (v.size() != 2) {
+                    throw invalid("'between' on '" + p + "' needs a list of two values");
+                }
+                yield attr.between(v.get(0), v.get(1));
+            }
+            default -> throw invalid("Unknown operator '" + op + "'");
+        };
+    }
+
+    private static Object required(Object raw, String path, String op) {
+        if (raw == null) {
+            throw invalid("'" + op + "' on '" + path + "' needs a value; use isNull to test for null");
+        }
+        return raw;
+    }
+
+    private static List<Object> convertList(Object raw, Class<?> type, String path, String op) {
+        if (!(raw instanceof Collection<?> values) || values.isEmpty()) {
+            throw invalid("'" + op + "' on '" + path + "' needs a non-empty list of values");
+        }
+        List<Object> result = new ArrayList<>();
+        for (Object v : values) {
+            result.add(Mappings.convert(v, type, path));
+        }
+        return result;
+    }
+
+    private static String firstKey(AttributePath path) {
+        ClassDescriptor target = path.last().getReferenceDescriptor();
+        List<String> keys = target == null ? List.of() : Mappings.keyAttributes(target);
+        return keys.isEmpty() ? "id" : keys.get(0);
+    }
+
+    private static ToolException invalid(String message) {
+        return new ToolException(ToolException.Code.INVALID_FILTER, message);
+    }
+}

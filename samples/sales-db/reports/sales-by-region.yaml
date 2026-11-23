@@ -1,0 +1,24 @@
+name: sales_by_region
+title: Sales by region
+description: Total order value and order count per customer region for a date range, excluding cancelled orders.
+root: Order
+select:
+  - path: customer.region
+    as: region
+  - aggregate: count
+    path: id
+    as: orderCount
+  - aggregate: sum
+    path: total
+    as: totalValue
+filter:
+  and:
+    - { path: orderDate, op: ge, param: fromDate }
+    - { path: orderDate, op: lt, param: toDate }
+    - { path: status, op: ne, value: CANCELLED }
+groupBy: [customer.region]
+orderBy:
+  - { by: totalValue, dir: desc }
+parameters:
+  fromDate: { type: date, required: true, description: "Start of the range, inclusive (YYYY-MM-DD)" }
+  toDate:   { type: date, required: true, description: "End of the range, exclusive (YYYY-MM-DD)" }

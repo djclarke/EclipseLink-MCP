@@ -1,0 +1,39 @@
+apiVersion: eclipselink-mcp/v1
+server:
+  name: sales-db
+  title: Sales database (sample)
+  version: 0.1.0
+  instructions: |
+    Sample sales and order data. Amounts are in USD.
+
+connection:
+  # An existing database. `mvn test` creates a sample one at target/test-db/sales (see README).
+  url: ${env:SALES_DB_URL}
+  user: ${env:SALES_DB_USER}
+  password: ${env:SALES_DB_PASSWORD}
+  pool:
+    min: 1
+    max: 4
+
+model:
+  mappings: model/eclipselink-orm.xml
+
+tools:
+  list_entities: true
+  describe_entity: true
+  find_entity: true
+  query_entities: true
+  reports: true
+
+limits:
+  defaultPageSize: 50
+  maxPageSize: 500
+  maxDepth: 2
+  queryTimeoutSeconds: 30
+
+transport:
+  type: stdio
+
+logging:
+  level: info
+  audit: true

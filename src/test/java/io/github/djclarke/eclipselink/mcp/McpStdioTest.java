@@ -1,0 +1,145 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.tools.ToolService;
+import io.modelcontextprotocol.json.McpJsonDefaults;
+import io.modelcontextprotocol.server.McpSyncServer;
+import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+/**
+ * End to end over the MCP stdio transport: JSON-RPC lines in, JSON-RPC lines out, exactly as an MCP client such
+ * as Claude Desktop would talk to {@code java -jar ... --definition samples/sales-db}.
+ */
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
+class McpStdioTest {
+
+    static final JsonMapper JSON = JsonMapper.builder().build();
+
+    static ModelRuntime model;
+    static McpSyncServer server;
+    static Writer toServer;
+    static BufferedReader fromServer;
+    static int nextId = 1;
+
+    @BeforeAll
+    static void start() throws IOException {
+        model = ModelRuntime.start(TestDatabase.sampleDefinition());
+        PipedOutputStream clientOut = new PipedOutputStream();
+        PipedInputStream serverIn = new PipedInputStream(clientOut, 1 << 16);
+        PipedOutputStream serverOut = new PipedOutputStream();
+        PipedInputStream clientIn = new PipedInputStream(serverOut, 1 << 20);
+        server = McpServerFactory.create(model, new ToolService(model),
+                new StdioServerTransportProvider(McpJsonDefaults.getMapper(), serverIn, serverOut));
+        toServer = new OutputStreamWriter(clientOut, StandardCharsets.UTF_8);
+        fromServer = new BufferedReader(new InputStreamReader(clientIn, StandardCharsets.UTF_8));
+
+        JsonNode init = request("initialize", Map.of(
+                "protocolVersion", "2025-06-18",
+                "capabilities", Map.of(),
+                "clientInfo", Map.of("name", "test-client", "version", "1.0")));
+        assertEquals("sales-db", init.at("/result/serverInfo/name").asString());
+        String instructions = init.at("/result/instructions").asString();
+        assertTrue(instructions.startsWith("Sample sales and order data") && instructions.contains("report_sales_by_region"),
+                instructions);
+        notify("notifications/initialized");
+    }
+
+    @AfterAll
+    static void stop() {
+        server.closeGracefully();
+        model.close();
+    }
+
+    @Test
+    void listsToolsWithSchemasAndAnnotations() throws IOException {
+        JsonNode tools = request("tools/list", Map.of());
+        List<String> names = tools.at("/result/tools").valueStream().map(t -> t.get("name").asString()).toList();
+        assertTrue(names.containsAll(List.of("list_entities", "query_entities", "report_sales_by_region")), names.toString());
+        JsonNode query = tools.at("/result/tools").valueStream()
+                .filter(t -> t.get("name").asString().equals("query_entities")).findFirst().orElseThrow();
+        assertTrue(query.at("/annotations/readOnlyHint").asBoolean());
+        assertEquals("Customer", query.at("/inputSchema/properties/entity/enum/0").asString());
+    }
+
+    @Test
+    void callReportTool() throws IOException {
+        JsonNode result = request("tools/call", Map.of("name", "report_sales_by_region",
+                "arguments", Map.of("fromDate", "2026-07-01", "toDate", "2026-10-01")));
+        assertEquals("NORTH", result.at("/result/structuredContent/rows/0/region").asString());
+        assertTrue(result.at("/result/content/0/text").asString().contains("\"totalValue\""));
+    }
+
+    @Test
+    void toolErrorsComeBackAsErrorResults() throws IOException {
+        JsonNode result = request("tools/call", Map.of("name", "find_entity",
+                "arguments", Map.of("entity", "Order", "id", 424242)));
+        assertTrue(result.at("/result/isError").asBoolean());
+        assertEquals("NOT_FOUND", result.at("/result/structuredContent/error/code").asString());
+    }
+
+    @Test
+    void readModelResource() throws IOException {
+        JsonNode result = request("resources/read", Map.of("uri", McpServerFactory.MODEL_URI));
+        String text = result.at("/result/contents/0/text").asString();
+        assertTrue(text.contains("### Order") && text.contains("report_sales_by_region"), text);
+    }
+
+    static synchronized JsonNode request(String method, Object params) throws IOException {
+        int id = nextId++;
+        send(Map.of("jsonrpc", "2.0", "id", id, "method", method, "params", params));
+        while (true) {
+            String line = fromServer.readLine();
+            if (line == null) {
+                throw new IOException("Server closed the stream");
+            }
+            JsonNode msg = JSON.readTree(line);
+            if (msg.has("id") && msg.get("id").asInt() == id) {
+                if (msg.has("error")) {
+                    throw new AssertionError("JSON-RPC error: " + msg.get("error"));
+                }
+                return msg;
+            }
+        }
+    }
+
+    static synchronized void notify(String method) throws IOException {
+        send(Map.of("jsonrpc", "2.0", "method", method));
+    }
+
+    private static void send(Object message) throws IOException {
+        toServer.write(JSON.writeValueAsString(message));
+        toServer.write('\n');
+        toServer.flush();
+    }
+}

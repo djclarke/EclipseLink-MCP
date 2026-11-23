@@ -1,0 +1,95 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.definition;
+
+/**
+ * The deployment descriptor, {@code eclipselink-mcp.yaml}. See docs/server-definition.md section 2.1.
+ */
+public record Descriptor(
+        String apiVersion,
+        Server server,
+        Connection connection,
+        Model model,
+        Tools tools,
+        Limits limits,
+        Transport transport,
+        Logging logging) {
+
+    public static final String API_VERSION = "eclipselink-mcp/v1";
+
+    public Descriptor {
+        tools = tools == null ? new Tools(null, null, null, null, null) : tools;
+        limits = limits == null ? new Limits(null, null, null, null, null) : limits;
+        transport = transport == null ? new Transport(null) : transport;
+        logging = logging == null ? new Logging(null, null) : logging;
+    }
+
+    public record Server(String name, String title, String version, String instructions) {
+    }
+
+    public record Connection(String url, String user, String password, Pool pool) {
+        public Connection {
+            pool = pool == null ? new Pool(null, null) : pool;
+        }
+    }
+
+    public record Pool(Integer min, Integer max) {
+        public Pool {
+            min = min == null ? 1 : min;
+            max = max == null ? 8 : max;
+        }
+    }
+
+    public record Model(String mappings, String bindings, String schema) {
+    }
+
+    public record Tools(
+            Boolean list_entities,
+            Boolean describe_entity,
+            Boolean find_entity,
+            Boolean query_entities,
+            Boolean reports) {
+        public Tools {
+            list_entities = list_entities == null || list_entities;
+            describe_entity = describe_entity == null || describe_entity;
+            find_entity = find_entity == null || find_entity;
+            query_entities = query_entities == null || query_entities;
+            reports = reports == null || reports;
+        }
+    }
+
+    public record Limits(
+            Integer defaultPageSize,
+            Integer maxPageSize,
+            Integer maxDepth,
+            Integer queryTimeoutSeconds,
+            Long maxResultBytes) {
+        public Limits {
+            defaultPageSize = defaultPageSize == null ? 50 : defaultPageSize;
+            maxPageSize = maxPageSize == null ? 500 : maxPageSize;
+            maxDepth = maxDepth == null ? 2 : maxDepth;
+            queryTimeoutSeconds = queryTimeoutSeconds == null ? 30 : queryTimeoutSeconds;
+            maxResultBytes = maxResultBytes == null ? 1_048_576L : maxResultBytes;
+        }
+    }
+
+    public record Transport(String type) {
+        public Transport {
+            type = type == null ? "stdio" : type;
+        }
+    }
+
+    public record Logging(String level, Boolean audit) {
+        public Logging {
+            level = level == null ? "info" : level;
+            audit = audit == null || audit;
+        }
+    }
+}

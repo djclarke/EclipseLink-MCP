@@ -1,0 +1,51 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.query;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
+import io.github.djclarke.eclipselink.mcp.tools.ToolException;
+
+/**
+ * Opaque paging cursors. The POC encodes the row offset; any server instance can continue a page.
+ * Results are ordered by key so offsets are stable while the data does not change.
+ */
+public final class Cursors {
+
+    private static final String PREFIX = "o:";
+
+    private Cursors() {
+    }
+
+    public static String encode(int offset) {
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString((PREFIX + offset).getBytes(StandardCharsets.US_ASCII));
+    }
+
+    public static int decode(Object cursor) {
+        if (cursor == null || cursor.toString().isEmpty()) {
+            return 0;
+        }
+        try {
+            String s = new String(Base64.getUrlDecoder().decode(cursor.toString()), StandardCharsets.US_ASCII);
+            if (s.startsWith(PREFIX)) {
+                int offset = Integer.parseInt(s.substring(PREFIX.length()));
+                if (offset >= 0) {
+                    return offset;
+                }
+            }
+        } catch (IllegalArgumentException e) {
+            // fall through
+        }
+        throw new ToolException(ToolException.Code.INVALID_PARAMETER,
+                "Invalid cursor; pass the nextCursor value from a previous result");
+    }
+}
