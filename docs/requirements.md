@@ -117,6 +117,22 @@ The repo ships its own Claude skills for working with the factory. They double a
 - FR-25: Self-contained (decided 2026-11-23). The skills live in this repo and do not depend on the EclipseLink-JPA-skills repo. Shared material can be factored out later if that proves useful.
 - FR-26: Timing. Skills are written once the POC config format settles, so they do not churn with it.
 
+### 4.8 Design-time workflow
+
+The work splits into **design time** and **run time**. At design time, the skills (4.7) drive an iterative session in which Claude and the user connect to the database, explore the schema, choose the tables of interest and shape the mappings. At run time, the server only loads the result.
+
+- FR-27: Live working context. During the session, EclipseLink dynamic persistence plus default MOXy JSON bindings give a working JPA context over the chosen tables, which can run queries and convert results to JSON before any config is final.
+- FR-28: Iterate with feedback. After each change (adding a table, renaming an attribute, fixing a relationship, defining a report), the skill runs a sample query and shows the JSON that agents would receive, so the user sees the effect immediately.
+- FR-29: Defaults first, overrides second. The session starts from default mappings and default JSON bindings, and records overrides only where the user wants a different name, shape or relationship. Overrides are kept minimal so the config stays readable.
+- FR-30: Save the outcome as files. The session writes reviewable files that are versioned in git and loaded by the runtime, so the same files always produce the same server:
+  - `eclipselink-orm.xml` for the dynamic entities and their mappings;
+  - MOXy bindings (e.g. `eclipselink-oxm.json` or `.xml`) for the JSON shape;
+  - the named report definitions (4.5);
+  - a small deployment config naming the connection, the files above and tool settings.
+- FR-31: Stay inside the account. The schema scan runs as the shared database account (5.0) and only sees what that account can read.
+- FR-32: Re-entrant. The session can reopen existing files to add tables or reports later, rather than starting over.
+
+## 5. Security requirements
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
 
