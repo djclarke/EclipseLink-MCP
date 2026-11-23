@@ -86,6 +86,18 @@ Many agent questions need a flat result built from several tables ("customer nam
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
 
+### 5.0 Starting assumption (milestone 1)
+
+The database account the server connects with has the same permissions as the MCP client it serves. Access is therefore enforced by the database's own grants (and views, row-level security or VPD where the DBA has set them up), and the server can only ever return what that account can read.
+
+Consequences:
+
+- Milestone 1 does not need the role-to-policy layer (SR-4, SR-5, SR-8, SR-9, SR-11) to be secure. Those requirements stay in scope for later milestones, when one server serves callers with different permissions.
+- Model building should only see what the account can see: introspection runs as that account, so tables it cannot read do not become entities.
+- Tool exposure (SR-3) still applies, so a read-only deployment never offers write tools even if the account could write.
+- This holds with the internal connection pool (NFR-6) because every pooled connection uses the one account, which matches the single caller in milestone 1.
+- It stops holding once a server instance serves several callers with different permissions. Options then are: one server instance (and account) per permission set; per-caller database identity on each EntityManager (EclipseLink exclusive connections with per-session credentials, or Oracle proxy authentication over the shared pool); or the in-app policy layer in 5.2 to 5.4 over one shared account. The choice is open question 13a.
+
 ### 5.1 Identity
 
 - SR-1: Use MCP's HTTP transport authorization (OAuth 2.1) to identify the caller. For stdio/local use, identity comes from configuration.
@@ -112,7 +124,7 @@ Access control must not depend on the model behaving. The agent should never rec
 - SR-10: Each MCP request gets its own EntityManager created with the caller's properties. No shared EntityManager across callers. Shared cache use must respect row filters (isolated or partitioned cache where needed).
 - SR-11: Policy is declarative (one file, per entity and role), validated at startup, and fails closed on errors.
 - SR-12: Audit log for every tool call: caller, roles, tool, arguments, generated query, row count, duration, outcome.
-- SR-13: Database credentials are never exposed to the agent; the server connects with a least-privilege database account.
+- SR-13: Database credentials are never exposed to the agent; the server connects with a least-privilege database account that, in milestone 1, matches the MCP client's permissions (5.0).
 
 ### 5.6 Example policy (illustrative)
 
