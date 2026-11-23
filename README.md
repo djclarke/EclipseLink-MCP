@@ -28,9 +28,11 @@ Requirements phase. See:
 
 The standalone runtime, read-only, over a sample schema, with `list_entities`, `describe_entity`, `find_entity`, a safe `query_entities` tool and named report tools for multi-table projections. Access is whatever the one shared database account can read; the security model follows the POC.
 
-## Planned stack (to be confirmed)
+## Planned stack
 
-Java 21, Maven, EclipseLink 5.x/6.0, the MCP Java SDK, and an embedded sample database.
+- MCP: the official [MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk) core module, no Spring (decided). Spring and Quarkus integrations may come later as adapters.
+- Java 21 and Maven (proposed).
+- EclipseLink 5.0.x or 6.0.0-SNAPSHOT, and the sample database: still open, see [open questions](docs/open-questions.md).
 
 ## License
 

@@ -4,7 +4,7 @@ Decisions to make before or during the first prototype. Proposed answers are mar
 
 ## Stack
 
-1. **MCP library:** official MCP Java SDK (`io.modelcontextprotocol.sdk`), or a framework (Spring AI MCP, Quarkus MCP)? *Proposed: plain MCP Java SDK, to keep dependencies small and EclipseLink central.*
+1. **MCP library:** official MCP Java SDK (`io.modelcontextprotocol.sdk`), or a framework (Spring AI MCP, Quarkus MCP)? *Decided (2026-11-23): the official MCP Java SDK ([modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk)) core module, without Spring, in the library module. It is the reference implementation, tracks the spec (stdio, streamable HTTP, OAuth), and is plain Java, so the library drops into any stack. Spring AI MCP (e.g. a Spring Boot starter) and the Quarkus MCP server extension are possible later adapters, not the base. LangChain4j is mainly client-side and not used.*
 2. **Java and build:** *Proposed: Java 21, Maven.*
 3. **EclipseLink version:** build on released 5.0.x, or track 6.0.0-SNAPSHOT? Does the prototype need anything only in 6.0?
 4. **Transport for milestone 1:** stdio only, or streamable HTTP too? OAuth needs HTTP. *Proposed: stdio first with roles from config, HTTP + OAuth in milestone 2.*
