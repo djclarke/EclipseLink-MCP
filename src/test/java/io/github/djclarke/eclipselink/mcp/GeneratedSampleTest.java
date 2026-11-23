@@ -1,0 +1,137 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Stream;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
+import io.github.djclarke.eclipselink.mcp.generate.InitCommand;
+import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.tools.ToolService;
+
+/**
+ * Golden test for {@code samples/sales-db-generated}: the untouched {@code init} output for the sample database.
+ * It regenerates the definition and fails on any difference, so a change to {@code init} updates the sample in
+ * the same commit. To accept an intended change, run {@code mvn test -Dtest=GeneratedSampleTest -Dgolden.update=true}
+ * and review the diff.
+ */
+class GeneratedSampleTest {
+
+    static final Path GOLDEN = Path.of("samples/sales-db-generated");
+    /** Relative to the project root, so the committed descriptor works from a clone after {@code mvn test}. */
+    static final String URL = "jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE";
+    static final String PASSWORD_ENV = "SALES_DB_PASSWORD";
+    /** The exact command, also given in samples/README.md. */
+    static final String[] INIT = {"init", "--url", URL, "--user", TestDatabase.READER_USER,
+            "--password-env", PASSWORD_ENV, "--name", "sales", "--include", "*"};
+
+    @TempDir
+    Path dir;
+
+    @Test
+    void initOutputMatchesCommittedSample() throws IOException {
+        TestDatabase.environment(); // creates the database
+        Path out = dir.resolve("sales-db-generated");
+        List<String> args = new ArrayList<>(List.of(INIT).subList(1, INIT.length));
+        args.addAll(List.of("--out", out.toString()));
+        ByteArrayOutputStream log = new ByteArrayOutputStream();
+        int code = InitCommand.run(args.toArray(String[]::new), Map.of(PASSWORD_ENV, TestDatabase.READER_PASSWORD),
+                new PrintStream(log, true, StandardCharsets.UTF_8));
+        assertEquals(0, code, log.toString(StandardCharsets.UTF_8));
+
+        if (Boolean.getBoolean("golden.update")) {
+            replace(out, GOLDEN);
+            return;
+        }
+
+        TreeSet<String> expected = files(GOLDEN);
+        TreeSet<String> actual = files(out);
+        List<String> problems = new ArrayList<>();
+        for (String f : actual) {
+            if (!expected.contains(f)) {
+                problems.add("new file " + f);
+            } else if (!read(GOLDEN.resolve(f)).equals(read(out.resolve(f)))) {
+                problems.add("changed " + f);
+            }
+        }
+        for (String f : expected) {
+            if (!actual.contains(f)) {
+                problems.add("missing " + f);
+            }
+        }
+        if (!problems.isEmpty()) {
+            fail("init output differs from " + GOLDEN + ": " + String.join(", ", problems)
+                    + ". If the change to init is intended, run "
+                    + "mvn test -Dtest=GeneratedSampleTest -Dgolden.update=true, review the diff and commit it.");
+        }
+    }
+
+    @Test
+    void committedSampleServes() {
+        TestDatabase.environment();
+        try (ModelRuntime model = ModelRuntime.start(
+                new DefinitionLoader(Map.of(PASSWORD_ENV, TestDatabase.READER_PASSWORD)::get).load(GOLDEN))) {
+            assertEquals(Set.of("Customer", "OrderLine", "Orders", "Product"), model.entities().keySet());
+            Map<?, ?> order = (Map<?, ?>) new ToolService(model).call("find_entity",
+                    Map.of("entity", "Orders", "id", 1001)).get("item");
+            assertEquals("1250.00", order.get("total"));
+        }
+    }
+
+    private static TreeSet<String> files(Path root) throws IOException {
+        try (Stream<Path> s = Files.walk(root)) {
+            return s.filter(Files::isRegularFile).map(p -> root.relativize(p).toString().replace('\\', '/'))
+                    .collect(TreeSet::new, TreeSet::add, TreeSet::addAll);
+        }
+    }
+
+    /** Line endings are normalized, so a Windows checkout with autocrlf still compares equal. */
+    private static String read(Path p) throws IOException {
+        return Files.readString(p).replace("\r\n", "\n");
+    }
+
+    private static void replace(Path from, Path to) throws IOException {
+        if (Files.exists(to)) {
+            try (Stream<Path> s = Files.walk(to)) {
+                for (Path p : s.sorted((a, b) -> b.getNameCount() - a.getNameCount()).toList()) {
+                    Files.delete(p);
+                }
+            }
+        }
+        try (Stream<Path> s = Files.walk(from)) {
+            for (Path p : s.toList()) {
+                Path target = to.resolve(from.relativize(p).toString());
+                if (Files.isDirectory(p)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+}

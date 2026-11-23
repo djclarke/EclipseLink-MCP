@@ -1,0 +1,10 @@
+apiVersion: eclipselink-mcp/v1
+server:
+  name: sales
+  version: 0.1.0
+connection:
+  url: "${env:SALES_DB_URL:-jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE}"
+  user: "${env:SALES_DB_USER:-MCP_READER}"
+  password: "${env:SALES_DB_PASSWORD}"
+model:
+  mappings: model/eclipselink-orm.xml
