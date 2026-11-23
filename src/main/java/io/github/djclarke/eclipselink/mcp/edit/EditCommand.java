@@ -1,0 +1,203 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.edit;
+
+import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
+import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
+import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.tools.ToolService;
+
+/**
+ * {@code eclipselink-mcp edit}: one validated change to a definition's model (docs/server-definition.md 7.5).
+ * The change is applied, then the whole definition is loaded and started against the database, reports and
+ * queries included. If that fails, every file is restored and the error is reported, so the definition is
+ * never left broken.
+ */
+public final class EditCommand {
+
+    private final Function<String, String> environment;
+    private final PrintStream out;
+    private final PrintStream err;
+
+    public EditCommand(Function<String, String> environment, PrintStream out, PrintStream err) {
+        this.environment = environment;
+        this.out = out;
+        this.err = err;
+    }
+
+    public static void usage(PrintStream out) {
+        out.println("Usage: java -jar eclipselink-mcp-server.jar edit --definition <dir> [--drivers <dir>] <operation>");
+        out.println("  rename-entity <Entity> <NewName>");
+        out.println("  rename-attribute <Entity> <attribute> <newName>");
+        out.println("  remove-attribute <Entity> <attribute>... [--with-inverse]");
+        out.println("  unlink <Entity> <relationship>     to-one relationship -> foreign key attribute; drops its inverse");
+        out.println("  remove-entity <Entity>             references to it become foreign key attributes");
+        out.println("  describe <Entity>[.<attribute>] <text>   set mcp.description (\"\" removes it)");
+        out.println("The definition is validated against the database after the change; on failure nothing changes.");
+    }
+
+    /** @return the process exit code */
+    public int run(String[] args) {
+        Path definition = null;
+        Path drivers = null;
+        boolean withInverse = false;
+        List<String> op = new ArrayList<>();
+        for (int i = 0; i < args.length; i++) {
+            switch (args[i]) {
+                case "--definition" -> definition = i + 1 < args.length ? Path.of(args[++i]) : null;
+                case "--drivers" -> drivers = i + 1 < args.length ? Path.of(args[++i]) : null;
+                case "--with-inverse" -> withInverse = true;
+                case "--help", "-h" -> {
+                    usage(out);
+                    return 0;
+                }
+                default -> op.add(args[i]);
+            }
+        }
+        if (definition == null || op.isEmpty()) {
+            usage(err);
+            return 2;
+        }
+        Path dir = definition.toAbsolutePath().normalize();
+        Map<Path, String> snapshot = new LinkedHashMap<>();
+        try {
+            ServerDefinition before = new DefinitionLoader(environment).load(dir);
+            Path orm = before.mappingsFile();
+            snapshot(orm, dir, snapshot);
+
+            ModelEditor editor = ModelEditor.read(orm);
+            String name = op.get(0);
+            List<String> a = op.subList(1, op.size());
+            switch (name) {
+                case "rename-entity" -> {
+                    arity(name, a, 2);
+                    editor.renameEntity(a.get(0), a.get(1));
+                }
+                case "rename-attribute" -> {
+                    arity(name, a, 3);
+                    editor.renameAttribute(a.get(0), a.get(1), a.get(2));
+                }
+                case "remove-attribute" -> {
+                    if (a.size() < 2) {
+                        throw new DefinitionException("remove-attribute needs an entity and at least one attribute");
+                    }
+                    for (String attr : a.subList(1, a.size())) {
+                        editor.removeAttribute(a.get(0), attr, withInverse);
+                    }
+                }
+                case "unlink" -> {
+                    arity(name, a, 2);
+                    editor.unlink(a.get(0), a.get(1));
+                }
+                case "remove-entity" -> {
+                    arity(name, a, 1);
+                    editor.removeEntity(a.get(0));
+                }
+                case "describe" -> {
+                    arity(name, a, 2);
+                    editor.describe(a.get(0), a.get(1));
+                }
+                default -> throw new DefinitionException("Unknown edit operation '" + name + "'");
+            }
+            editor.write(orm);
+            List<String> changes = new ArrayList<>(editor.changes());
+            if (name.equals("rename-entity")) {
+                changes.addAll(renameRoots(snapshot, a.get(0), a.get(1)));
+            }
+
+            // Validate the whole definition against the database; restore everything on failure.
+            ServerDefinition after = new DefinitionLoader(environment).load(dir);
+            try (ModelRuntime model = ModelRuntime.start(after, drivers)) {
+                ToolService tools = new ToolService(model);
+                changes.forEach(c -> out.println(c));
+                out.println("Definition OK: " + model.entities().size() + " entities, " + tools.tools().size()
+                        + " tools");
+            }
+            return 0;
+        } catch (DefinitionException e) {
+            restore(snapshot);
+            err.println("Edit not applied: " + e.getMessage());
+            return 1;
+        } catch (RuntimeException e) {
+            restore(snapshot);
+            throw e;
+        }
+    }
+
+    private static void arity(String op, List<String> args, int n) {
+        if (args.size() != n) {
+            throw new DefinitionException(op + " takes " + n + " argument" + (n == 1 ? "" : "s") + ", got " + args);
+        }
+    }
+
+    /** The ORM file and every report and query file, so a failed edit can be undone. */
+    private static void snapshot(Path orm, Path dir, Map<Path, String> snapshot) {
+        try {
+            snapshot.put(orm, Files.readString(orm));
+            for (String sub : List.of("reports", "queries")) {
+                Path d = dir.resolve(sub);
+                if (Files.isDirectory(d)) {
+                    try (Stream<Path> files = Files.list(d)) {
+                        for (Path f : files.filter(p -> p.toString().matches(".*\\.ya?ml$")).sorted().toList()) {
+                            snapshot.put(f, Files.readString(f));
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            throw new DefinitionException("Cannot read the definition: " + e.getMessage(), e);
+        }
+    }
+
+    /** Updates {@code root:} in report and query files after an entity rename. */
+    private static List<String> renameRoots(Map<Path, String> snapshot, String from, String to) {
+        List<String> changes = new ArrayList<>();
+        Pattern root = Pattern.compile("(?m)^(root:[ \\t]*[\"']?)" + Pattern.quote(from) + "([\"']?[ \\t]*(#.*)?)$");
+        for (Map.Entry<Path, String> e : snapshot.entrySet()) {
+            if (!e.getKey().toString().matches(".*\\.ya?ml$")) {
+                continue;
+            }
+            Matcher m = root.matcher(e.getValue());
+            if (m.find()) {
+                try {
+                    Files.writeString(e.getKey(), m.replaceAll("$1" + Matcher.quoteReplacement(to) + "$2"));
+                } catch (IOException x) {
+                    throw new DefinitionException("Cannot write " + e.getKey(), x);
+                }
+                changes.add("Updated root in " + e.getKey().getParent().getFileName() + "/" + e.getKey().getFileName());
+            }
+        }
+        return changes;
+    }
+
+    private void restore(Map<Path, String> snapshot) {
+        for (Map.Entry<Path, String> e : snapshot.entrySet()) {
+            try {
+                Files.writeString(e.getKey(), e.getValue());
+            } catch (IOException x) {
+                err.println("Could not restore " + e.getKey() + ": " + x.getMessage());
+            }
+        }
+    }
+}

@@ -1,0 +1,431 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.edit;
+
+import java.io.IOException;
+import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.regex.Pattern;
+
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+
+/**
+ * Structural edits to a definition's ORM XML (docs/server-definition.md 7.5), so the design-time skill never
+ * edits mappings as text. Each operation checks its preconditions and keeps the mapping consistent: renaming an
+ * owning relationship updates the inverse's {@code mapped-by}, removing an entity turns references to it into
+ * foreign key attributes. Comments and layout outside the edited elements are kept.
+ */
+public final class ModelEditor {
+
+    private static final Pattern JAVA_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+    private static final String DESCRIPTION = "mcp.description";
+
+    private final Document doc;
+    private final String pkg;
+    private final List<String> changes = new ArrayList<>();
+
+    private ModelEditor(Document doc) {
+        this.doc = doc;
+        Element p = first(doc.getDocumentElement(), "package");
+        this.pkg = p == null ? null : p.getTextContent().strip();
+    }
+
+    public static ModelEditor read(Path ormXml) {
+        try {
+            DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
+            f.setNamespaceAware(true);
+            f.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            return new ModelEditor(f.newDocumentBuilder().parse(ormXml.toFile()));
+        } catch (Exception e) {
+            throw new DefinitionException("Cannot read " + ormXml + ": " + e.getMessage(), e);
+        }
+    }
+
+    /** What the operations so far changed, one line each. */
+    public List<String> changes() {
+        return changes;
+    }
+
+    // ---- operations ------------------------------------------------------------------------------------------
+
+    public void renameEntity(String from, String to) {
+        Element e = entity(from);
+        checkName(to);
+        if (findEntity(to) != null) {
+            throw new DefinitionException("Entity " + to + " already exists");
+        }
+        e.setAttribute("class", qualifiedLike(e.getAttribute("class"), to));
+        if (e.hasAttribute("name")) {
+            e.setAttribute("name", to);
+        }
+        int refs = 0;
+        for (Element a : allAttributes()) {
+            if (a.hasAttribute("target-entity") && simple(a.getAttribute("target-entity")).equals(from)) {
+                a.setAttribute("target-entity", qualifiedLike(a.getAttribute("target-entity"), to));
+                refs++;
+            }
+        }
+        changes.add("Renamed entity " + from + " to " + to + (refs > 0 ? " (" + refs + " relationship targets updated)" : ""));
+    }
+
+    public void renameAttribute(String entity, String from, String to) {
+        Element e = entity(entity);
+        Element a = attribute(e, from);
+        checkName(to);
+        if (findAttribute(e, to) != null) {
+            throw new DefinitionException(entity + " already has an attribute " + to);
+        }
+        List<Element> inverses = isRelationship(a) && !a.hasAttribute("mapped-by")
+                ? inversesOf(entity, from) : List.of();
+        a.setAttribute("name", to);
+        String note = "";
+        for (Element inverse : inverses) {
+            inverse.setAttribute("mapped-by", to);
+            note = " (mapped-by updated on " + owner(inverse) + "." + inverse.getAttribute("name") + ")";
+        }
+        changes.add("Renamed " + entity + "." + from + " to " + to + note);
+    }
+
+    /** Removes attributes; an owning relationship with an inverse needs {@code withInverse}. Keys stay. */
+    public void removeAttribute(String entity, String name, boolean withInverse) {
+        Element e = entity(entity);
+        Element a = attribute(e, name);
+        if (a.getLocalName().equals("id") || a.getLocalName().equals("embedded-id")) {
+            throw new DefinitionException(entity + "." + name + " is part of the key and cannot be removed");
+        }
+        if (isRelationship(a) && !a.hasAttribute("mapped-by")) {
+            List<Element> inverses = inversesOf(entity, name);
+            if (!inverses.isEmpty() && !withInverse) {
+                Element inv = inverses.get(0);
+                throw new DefinitionException(owner(inv) + "." + inv.getAttribute("name") + " is the inverse of "
+                        + entity + "." + name + "; remove it first, or pass --with-inverse");
+            }
+            for (Element inv : inverses) {
+                changes.add("Removed " + owner(inv) + "." + inv.getAttribute("name") + " (inverse)");
+                remove(inv);
+            }
+        }
+        remove(a);
+        changes.add("Removed " + entity + "." + name);
+    }
+
+    /**
+     * Replaces a to-one relationship by its foreign key column(s) as basic attributes ({@code product} becomes
+     * {@code productId}), and removes its inverse.
+     */
+    public void unlink(String entity, String relationship) {
+        Element e = entity(entity);
+        Element a = attribute(e, relationship);
+        if (!a.getLocalName().equals("many-to-one") && !a.getLocalName().equals("one-to-one")
+                || a.hasAttribute("mapped-by")) {
+            throw new DefinitionException(entity + "." + relationship + " is not an owning to-one relationship");
+        }
+        Element target = entity(simple(a.getAttribute("target-entity")));
+        List<Element> joins = children(a, "join-column");
+        if (joins.isEmpty()) {
+            throw new DefinitionException(entity + "." + relationship + " has no join-column to keep");
+        }
+        for (Element inv : inversesOf(entity, relationship)) {
+            changes.add("Removed " + owner(inv) + "." + inv.getAttribute("name") + " (inverse)");
+            remove(inv);
+        }
+        for (Element jc : joins) {
+            Element id = targetKey(target, jc);
+            String attrName = joins.size() == 1 ? relationship + "Id"
+                    : relationship + capitalize(id == null ? jc.getAttribute("name").toLowerCase(Locale.ROOT) : id.getAttribute("name"));
+            if (findAttribute(e, attrName) != null) {
+                attrName = attrName + "Fk";
+            }
+            Element basic = doc.createElementNS(a.getNamespaceURI(), "basic");
+            basic.setAttribute("name", attrName);
+            basic.setAttribute("attribute-type", id == null || !id.hasAttribute("attribute-type") ? "Long"
+                    : id.getAttribute("attribute-type"));
+            Element column = doc.createElementNS(a.getNamespaceURI(), "column");
+            column.setAttribute("name", jc.getAttribute("name"));
+            basic.appendChild(column);
+            insertBefore(basic, a);
+            changes.add("Added " + entity + "." + attrName + " for column " + jc.getAttribute("name"));
+        }
+        remove(a);
+        changes.add("Removed relationship " + entity + "." + relationship);
+    }
+
+    /** Removes an entity; to-one references to it become foreign key attributes, to-many ones are removed. */
+    public void removeEntity(String name) {
+        Element e = entity(name);
+        for (Element other : entities()) {
+            if (other == e) {
+                continue;
+            }
+            for (Element a : attributesOf(other)) {
+                if (!a.hasAttribute("target-entity") || !simple(a.getAttribute("target-entity")).equals(name)) {
+                    continue;
+                }
+                String owner = owner(a);
+                if ((a.getLocalName().equals("many-to-one") || a.getLocalName().equals("one-to-one"))
+                        && !a.hasAttribute("mapped-by")) {
+                    unlink(owner, a.getAttribute("name"));
+                } else {
+                    changes.add("Removed " + owner + "." + a.getAttribute("name"));
+                    remove(a);
+                }
+            }
+        }
+        remove(e);
+        changes.add("Removed entity " + name);
+    }
+
+    /** Sets the {@code mcp.description} of {@code Entity} or {@code Entity.attribute}; empty text removes it. */
+    public void describe(String target, String text) {
+        int dot = target.indexOf('.');
+        Element e = entity(dot < 0 ? target : target.substring(0, dot));
+        Element owner = dot < 0 ? e : attribute(e, target.substring(dot + 1));
+        Element property = null;
+        for (Element p : children(owner, "property")) {
+            if (DESCRIPTION.equals(p.getAttribute("name"))) {
+                property = p;
+            }
+        }
+        if (text == null || text.isBlank()) {
+            if (property != null) {
+                remove(property);
+            }
+            changes.add("Removed the description of " + target);
+            return;
+        }
+        if (property == null) {
+            property = doc.createElementNS(owner.getNamespaceURI(), "property");
+            property.setAttribute("name", DESCRIPTION);
+            Element attributes = dot < 0 ? first(e, "attributes") : null;
+            if (attributes != null) {
+                insertBefore(property, attributes);
+            } else {
+                Node last = owner.getLastChild();
+                String indent = indentOf(owner) + "    ";
+                if (last != null && last.getNodeType() == Node.TEXT_NODE && last.getTextContent().isBlank()) {
+                    owner.insertBefore(doc.createTextNode("\n" + indent), last);
+                    owner.insertBefore(property, last);
+                } else {
+                    owner.appendChild(doc.createTextNode("\n" + indent));
+                    owner.appendChild(property);
+                    owner.appendChild(doc.createTextNode("\n" + indentOf(owner)));
+                }
+            }
+        }
+        property.setAttribute("value", text.strip());
+        changes.add("Described " + target + ": " + text.strip());
+    }
+
+    /** Entity names (class names without the package), in file order. */
+    public List<String> entityNames() {
+        return entities().stream().map(x -> simple(x.getAttribute("class"))).toList();
+    }
+
+    public void write(Path ormXml) {
+        try {
+            var t = TransformerFactory.newInstance().newTransformer();
+            t.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
+            t.setOutputProperty(OutputKeys.INDENT, "no");
+            doc.setXmlStandalone(true);
+            StringWriter w = new StringWriter();
+            t.transform(new DOMSource(doc), new StreamResult(w));
+            // DOM drops line breaks between top-level nodes; put them back. Attribute order is not kept.
+            String xml = w.toString().replaceFirst("^(<\\?xml[^>]*\\?>)\\s*", "$1\n")
+                    .replace("--><entity-mappings", "-->\n<entity-mappings");
+            Files.writeString(ormXml, xml.endsWith("\n") ? xml : xml + "\n", StandardCharsets.UTF_8);
+        } catch (IOException | javax.xml.transform.TransformerException e) {
+            throw new DefinitionException("Cannot write " + ormXml + ": " + e.getMessage(), e);
+        }
+    }
+
+    // ---- helpers ---------------------------------------------------------------------------------------------
+
+    private List<Element> entities() {
+        return children(doc.getDocumentElement(), "entity");
+    }
+
+    private Element findEntity(String name) {
+        for (Element e : entities()) {
+            if (simple(e.getAttribute("class")).equals(name) || name.equals(e.getAttribute("name"))) {
+                return e;
+            }
+        }
+        return null;
+    }
+
+    private Element entity(String name) {
+        Element e = findEntity(name);
+        if (e == null) {
+            throw new DefinitionException("No entity " + name + "; entities are " + entityNames());
+        }
+        return e;
+    }
+
+    private List<Element> attributesOf(Element entity) {
+        Element attrs = first(entity, "attributes");
+        if (attrs == null) {
+            return List.of();
+        }
+        List<Element> out = new ArrayList<>();
+        for (Node n = attrs.getFirstChild(); n != null; n = n.getNextSibling()) {
+            if (n instanceof Element el && el.hasAttribute("name")) {
+                out.add(el);
+            }
+        }
+        return out;
+    }
+
+    private List<Element> allAttributes() {
+        List<Element> out = new ArrayList<>();
+        entities().forEach(e -> out.addAll(attributesOf(e)));
+        return out;
+    }
+
+    private Element findAttribute(Element entity, String name) {
+        return attributesOf(entity).stream().filter(a -> a.getAttribute("name").equals(name)).findFirst().orElse(null);
+    }
+
+    private Element attribute(Element entity, String name) {
+        Element a = findAttribute(entity, name);
+        if (a == null) {
+            throw new DefinitionException(simple(entity.getAttribute("class")) + " has no attribute " + name + "; it has "
+                    + attributesOf(entity).stream().map(x -> x.getAttribute("name")).toList());
+        }
+        return a;
+    }
+
+    /** Relationships in other entities whose mapped-by names {@code entity.attribute}. */
+    private List<Element> inversesOf(String entity, String attribute) {
+        Element owning = attribute(entity(entity), attribute);
+        String target = owning.hasAttribute("target-entity") ? simple(owning.getAttribute("target-entity")) : null;
+        List<Element> out = new ArrayList<>();
+        for (Element a : allAttributes()) {
+            if (attribute.equals(a.getAttribute("mapped-by")) && a.hasAttribute("target-entity")
+                    && simple(a.getAttribute("target-entity")).equals(entity)
+                    && (target == null || owner(a).equals(target))) {
+                out.add(a);
+            }
+        }
+        return out;
+    }
+
+    private Element targetKey(Element target, Element joinColumn) {
+        List<Element> ids = attributesOf(target).stream().filter(a -> a.getLocalName().equals("id")).toList();
+        String ref = joinColumn.getAttribute("referenced-column-name");
+        for (Element id : ids) {
+            Element col = first(id, "column");
+            if (col != null && col.getAttribute("name").equalsIgnoreCase(ref)) {
+                return id;
+            }
+        }
+        return ids.size() == 1 ? ids.get(0) : null;
+    }
+
+    private static boolean isRelationship(Element a) {
+        return switch (a.getLocalName()) {
+            case "many-to-one", "one-to-one", "one-to-many", "many-to-many" -> true;
+            default -> false;
+        };
+    }
+
+    private String owner(Element attribute) {
+        Node n = attribute;
+        while (n != null && !(n instanceof Element el && el.getLocalName().equals("entity"))) {
+            n = n.getParentNode();
+        }
+        return n == null ? "?" : simple(((Element) n).getAttribute("class"));
+    }
+
+    private String qualifiedLike(String existing, String simpleName) {
+        int dot = existing.lastIndexOf('.');
+        return dot < 0 ? simpleName : existing.substring(0, dot + 1) + simpleName;
+    }
+
+    private String simple(String className) {
+        String c = className.strip();
+        if (pkg != null && c.startsWith(pkg + ".")) {
+            return c.substring(pkg.length() + 1);
+        }
+        int dot = c.lastIndexOf('.');
+        return dot < 0 ? c : c.substring(dot + 1);
+    }
+
+    private static void checkName(String name) {
+        if (name == null || !JAVA_NAME.matcher(name).matches()) {
+            throw new DefinitionException("'" + name + "' is not a valid name (letters, digits and _, not starting with a digit)");
+        }
+    }
+
+    /** Removes an element together with the indentation before it. */
+    private static void remove(Element e) {
+        Node prev = e.getPreviousSibling();
+        if (prev != null && prev.getNodeType() == Node.TEXT_NODE && prev.getTextContent().isBlank()) {
+            prev.getParentNode().removeChild(prev);
+        }
+        e.getParentNode().removeChild(e);
+    }
+
+    /** Inserts {@code node} before {@code ref} with the same indentation. */
+    private void insertBefore(Element node, Element ref) {
+        Node parent = ref.getParentNode();
+        parent.insertBefore(node, ref);
+        parent.insertBefore(doc.createTextNode("\n" + indentOf(ref)), ref);
+    }
+
+    private static String indentOf(Element e) {
+        Node prev = e.getPreviousSibling();
+        if (prev != null && prev.getNodeType() == Node.TEXT_NODE) {
+            String t = prev.getTextContent();
+            int nl = t.lastIndexOf('\n');
+            if (nl >= 0 && t.substring(nl + 1).isBlank()) {
+                return t.substring(nl + 1);
+            }
+        }
+        return "";
+    }
+
+    private static Element first(Element parent, String localName) {
+        List<Element> c = children(parent, localName);
+        return c.isEmpty() ? null : c.get(0);
+    }
+
+    private static List<Element> children(Element parent, String localName) {
+        List<Element> out = new ArrayList<>();
+        NodeList nodes = parent.getChildNodes();
+        for (int i = 0; i < nodes.getLength(); i++) {
+            if (nodes.item(i) instanceof Element el && localName.equals(el.getLocalName())) {
+                out.add(el);
+            }
+        }
+        return out;
+    }
+
+    private static String capitalize(String s) {
+        return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
+    }
+}

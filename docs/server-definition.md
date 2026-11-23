@@ -487,7 +487,118 @@ The runtime refuses to start, with a clear message, if any of these fail:
 6. Every prompt: front matter, argument names used in the body.
 7. Tool name uniqueness (including `report_` names) and MCP name rules.
 
-## 7. Open decisions in this spec
+## 7. Generating a starter definition (`init`)
+
+The design-time skill (requirements 4.8) does not write mappings freehand. It calls a deterministic generator that reads JDBC metadata for chosen tables and writes a starter definition, then iterates on the output with the user (rename, trim, add reports and queries) and checks it with sample calls.
+
+### 7.1 Command
+
+```
+java -jar eclipselink-mcp-server.jar init --url <jdbc-url> --user <name> --password-env <VAR> \
+     --out <dir> [--name <server>] [--selection selection.yaml] [selection flags] [--drivers <dir>] [--force]
+```
+
+The password is read from the environment variable named by `--password-env`, never from an argument, so it stays out of process listings and shell history. The connection is set read-only. After writing, `init` loads the new definition and starts it against the same database, so it only reports success for a definition that runs.
+
+### 7.2 Choosing tables
+
+Large databases are never scanned wholesale. A selection must name tables or patterns. The way to ask for every table is an explicit `include: ["*"]`, which is what the sample database's round-trip test uses. Selections live in a reusable `selection.yaml`, and command line flags add to it:
+
+```yaml
+catalog: null                          # optional
+schemas: [SALES]                       # default: the connection's current schema only
+tables: [ORDERS, SALES.CUSTOMER]       # exact names (seeds); unquoted names follow the database's case
+include: ["ORDER*", "re:^CUST(OMER)?$"]   # glob, or regex with "re:"; case-insensitive
+exclude: ["*_AUDIT", "TMP_*"]          # removes pattern and FK matches; never removes a named table
+types: [TABLE, VIEW]                   # JDBC table types; default TABLE
+followForeignKeys: { depth: 1, direction: both }  # outgoing (default) | both; depth 0-10
+keys: { ORDER_SUMMARY_V: [ORDER_ID] }  # key for views or tables that declare no primary key
+maxTables: 200                         # fail rather than generate a huge model
+```
+
+| Flag | Selection key |
+|---|---|
+| `--schema` (repeatable), `--catalog` | `schemas`, `catalog` |
+| `--table A,B` (repeatable) | `tables` |
+| `--include`, `--exclude` (repeatable) | `include`, `exclude` |
+| `--type` (repeatable) | `types` |
+| `--follow-fks <n>`, `--fk-direction` | `followForeignKeys` |
+| `--max-tables` | `maxTables` |
+
+**Foreign key expansion** lets a user start from a few tables and pull in their neighbours. From the seeds (named tables and pattern matches), the generator follows foreign keys breadth first to `depth` hops. It follows outgoing keys (tables the seeds reference), plus incoming ones with `direction: both`. It stays inside the selected schemas and table types, and excludes still apply. For example, `--table ORDERS --follow-fks 1 --fk-direction both` selects ORDERS, CUSTOMER and ORDER_LINE.
+
+A table with no primary key (typically a view) is skipped with a warning, unless `keys` gives one.
+
+*Proposed next:* more mechanisms for picking the tables of one application in a shared database, all producing the same `selection.yaml`:
+- tables used by named SQL queries or a sample workload;
+- tables an account has been granted;
+- tables named in an existing `persistence.xml` or ORM file;
+- table comments or tags.
+
+### 7.3 Metadata reads stay scoped
+
+| Step | JDBC call | Scope |
+|---|---|---|
+| Named table | `getTables(catalog, schema, exactName, types)` | One table |
+| Glob | `getTables(..., LIKE pattern, types)` | The database filters names |
+| Regex | `getTables(..., "%", types)`, filtered in the generator | Names only, selected schemas only |
+| FK expansion | `getImportedKeys` (and `getExportedKeys` for `both`), then `getTables` per related table | Seeds and their neighbours, to `depth` |
+| Details | `getColumns`, `getPrimaryKeys`, `getImportedKeys` | Selected tables only |
+
+Column, key and foreign key metadata is never read for tables outside the selection. Names are matched exactly after each lookup, because `_` in a name is a LIKE wildcard.
+
+### 7.4 What is generated
+
+```
+<out>/
+├── eclipselink-mcp.yaml     # url and user as ${env:<NAME>_DB_URL:-...} defaults; password ${env:<VAR>}
+├── model/eclipselink-orm.xml
+├── selection.yaml           # the selection used, so the definition can be regenerated (FR-32)
+└── README.md                # tables, relationships, environment variables, warnings
+```
+
+- **Entities:** one VIRTUAL entity per selected table with a key. Table names become `UpperCamel` (`ORDER_LINE` → `OrderLine`) and columns become `lowerCamel`. Names are not singularized: renaming `Orders` to `Order` is the skill's first suggestion. A schema is written on `<table>` only when the selection names schemas.
+- **Types** come from `java.sql.Types`: integers → `Integer`/`Long`, `DECIMAL` with scale → `BigDecimal`, `DATE`/`TIME`/`TIMESTAMP` → `java.time`, character → `String`, binary → `byte[]`. A column of another type is skipped with a warning.
+- **Relationships:**
+  - A foreign key to a selected table's primary key becomes a lazy `many-to-one`, named from the column (`CUSTOMER_ID` → `customer`). Its columns are no longer basic attributes. When the key columns are also part of the primary key, the join columns are written read-only.
+  - The target gets the inverse `one-to-many` (`Customer.orders`).
+  - A foreign key to an unselected table stays a basic attribute (`productId`).
+- **Comments** (`REMARKS`) on tables and columns become `mcp.description` properties.
+- **JSON:** no OXM file. The default bindings apply until the user asks for overrides.
+- **Composite keys:** written as several `<id>` attributes, and `find_entity` takes an `id` object.
+
+The round-trip test generates a definition from the sample database with `include: ["*"]` and starts it. It then checks that the generated server returns the same items as the hand-written sample for `query_entities`, `find_entity` and a select through a one-to-many.
+
+### 7.5 Refining the model: `edit` and `call`
+
+After `init`, the design-time skill simplifies the model with the user. A typical session renames entities, drops reverse one-to-many relationships nobody navigates, trims columns and adds descriptions. It then defines named queries (2.5) and named reports (2.4). Model changes go through `edit`, so mappings are never edited as text:
+
+```
+java -jar eclipselink-mcp-server.jar edit --definition <dir> [--drivers <dir>] <operation>
+```
+
+| Operation | Effect |
+|---|---|
+| `rename-entity <Entity> <New>` | Renames the entity, updates every `target-entity`, and updates `root:` in report and query files |
+| `rename-attribute <Entity> <attr> <new>` | Renames an attribute. Renaming an owning relationship also updates the inverse's `mapped-by` |
+| `remove-attribute <Entity> <attr>... [--with-inverse]` | Removes attributes. Keys cannot be removed. An owning relationship with an inverse needs the inverse removed first, or `--with-inverse` |
+| `unlink <Entity> <relationship>` | Replaces a to-one relationship with its foreign key column(s) as basic attributes (`product` → `productId`) and removes its inverse |
+| `remove-entity <Entity>` | Removes an entity. To-one references to it are unlinked, and to-many references are removed |
+| `describe <Entity>[.<attr>] <text>` | Sets or replaces `mcp.description`. Empty text removes it |
+
+Every edit is **validated and atomic**. The change is written, and then the whole definition is loaded and started against the database, reports and queries included. If anything fails, the ORM file and every report and query file are restored, and the error is printed ("Edit not applied: Report 'by_region': ... region"). A definition is therefore never left broken. One consequence is that renaming or removing an attribute that a report or query uses is refused until that YAML is updated. The skill therefore simplifies the model before writing reports and queries.
+
+Edits keep comments and layout outside the elements they change. The XML serializer does not keep the order of attributes within an element.
+
+To show the user what agents will see after each step (FR-28), `call` runs one tool of a definition and prints its JSON result, with no MCP client:
+
+```
+java -jar eclipselink-mcp-server.jar call --definition <dir> query_order_details '{"region":"EAST","pageSize":2}'
+```
+
+The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
+
+## 8. Open decisions in this spec
 
 1. Descriptor format: YAML (proposed) or JSON.
 2. Report and prompt formats: YAML and Markdown files (proposed) or embedded in the descriptor.
@@ -495,4 +606,5 @@ The runtime refuses to start, with a clear message, if any of these fail:
 4. Whether the bundled JAR (`package` command) is in the POC or follows it. *Proposed: follows.*
 6. Per-use-case JSON shapes: object graphs over shared bindings by default, separate binding sets opt-in (4.8). *Proposed.*
 7. Secret resolver plugins: a `plugins/` folder like `drivers/` (5.3). *Proposed.*
-8. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
+8. Default naming in `init`: no singularization; the design-time skill proposes renames (7.4). *Proposed.*
+9. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*

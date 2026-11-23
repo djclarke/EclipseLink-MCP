@@ -1,0 +1,183 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.generate;
+
+import java.io.PrintStream;
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
+import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
+import io.github.djclarke.eclipselink.mcp.model.JdbcDrivers;
+import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.tools.ToolService;
+
+/**
+ * {@code eclipselink-mcp init}: generates a starter server definition from selected tables
+ * (docs/server-definition.md 7). The password is read from an environment variable, never from an argument,
+ * so it does not show in process listings or shell history.
+ */
+public final class InitCommand {
+
+    private final Function<String, String> environment;
+    private final PrintStream out;
+
+    public InitCommand(Function<String, String> environment, PrintStream out) {
+        this.environment = environment;
+        this.out = out;
+    }
+
+    public static void usage(PrintStream out) {
+        out.println("Usage: java -jar eclipselink-mcp-server.jar init --url <jdbc-url> --out <dir> [options]");
+        out.println("  --user <name>           database user");
+        out.println("  --password-env <VAR>    environment variable holding the password");
+        out.println("  --name <name>           server name (default: the --out directory name)");
+        out.println("  --selection <file>      selection.yaml with the options below (flags add to it)");
+        out.println("  --schema <s>            schema to search (repeatable; default: the connection's schema)");
+        out.println("  --catalog <c>           catalog to search");
+        out.println("  --table <t>[,<t>...]    exact table names, optionally SCHEMA.TABLE");
+        out.println("  --include <pattern>     glob (ORDER*) or regex (re:^ORD.*$); --include '*' for all tables");
+        out.println("  --exclude <pattern>     never select matching tables (unless named with --table)");
+        out.println("  --type <t>              JDBC table type, e.g. TABLE or VIEW (repeatable; default TABLE)");
+        out.println("  --follow-fks <n>        add tables up to n foreign key hops from the selected ones");
+        out.println("  --fk-direction <d>      outgoing (default) or both");
+        out.println("  --max-tables <n>        fail when more tables match (default 200)");
+        out.println("  --drivers <dir>         JDBC driver JARs");
+        out.println("  --force                 write into a non-empty --out directory");
+    }
+
+    /** @return the process exit code */
+    public int run(String[] args) {
+        String url = null;
+        String user = null;
+        String passwordEnv = null;
+        String name = null;
+        Path outDir = null;
+        Path selectionFile = null;
+        Path drivers = null;
+        String catalog = null;
+        String direction = null;
+        Integer depth = null;
+        Integer maxTables = null;
+        boolean force = false;
+        List<String> schemas = new ArrayList<>();
+        List<String> tables = new ArrayList<>();
+        List<String> include = new ArrayList<>();
+        List<String> exclude = new ArrayList<>();
+        List<String> types = new ArrayList<>();
+        try {
+            for (int i = 0; i < args.length; i++) {
+                String a = args[i];
+                if (a.equals("--force")) {
+                    force = true;
+                    continue;
+                }
+                if (a.equals("--help") || a.equals("-h")) {
+                    usage(out);
+                    return 0;
+                }
+                if (i + 1 >= args.length) {
+                    throw new IllegalArgumentException("Missing value for " + a);
+                }
+                String v = args[++i];
+                switch (a) {
+                    case "--url" -> url = v;
+                    case "--user" -> user = v;
+                    case "--password-env" -> passwordEnv = v;
+                    case "--name" -> name = v;
+                    case "--out" -> outDir = Path.of(v);
+                    case "--selection" -> selectionFile = Path.of(v);
+                    case "--drivers" -> drivers = Path.of(v);
+                    case "--catalog" -> catalog = v;
+                    case "--schema" -> schemas.add(v);
+                    case "--table" -> tables.addAll(Arrays.stream(v.split(",")).map(String::strip)
+                            .filter(t -> !t.isEmpty()).toList());
+                    case "--include" -> include.add(v);
+                    case "--exclude" -> exclude.add(v);
+                    case "--type" -> types.add(v);
+                    case "--follow-fks" -> depth = Integer.parseInt(v);
+                    case "--fk-direction" -> direction = v;
+                    case "--max-tables" -> maxTables = Integer.parseInt(v);
+                    default -> throw new IllegalArgumentException("Unknown argument: " + a);
+                }
+            }
+            if (url == null || outDir == null) {
+                throw new IllegalArgumentException("--url and --out are required");
+            }
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
+            usage(System.err);
+            return 2;
+        }
+
+        try {
+            TableSelection base = selectionFile == null
+                    ? new TableSelection(null, null, null, null, null, null, null, null, null)
+                    : TableSelection.load(selectionFile);
+            TableSelection selection = base.with(catalog, schemas, tables, include, exclude, types, depth, direction,
+                    maxTables);
+            String password = "";
+            if (passwordEnv != null) {
+                password = environment.apply(passwordEnv);
+                if (password == null) {
+                    throw new DefinitionException("Environment variable " + passwordEnv + " is not set");
+                }
+            }
+            String serverName = name != null ? name
+                    : outDir.toAbsolutePath().normalize().getFileName().toString().toLowerCase().replaceAll("[^a-z0-9-]+", "-");
+            Path dir = outDir.toAbsolutePath().normalize();
+
+            SchemaModel schema;
+            try (JdbcDrivers loaded = JdbcDrivers.load(drivers == null ? null : drivers.toAbsolutePath());
+                 Connection c = DriverManager.getConnection(url, user == null ? "" : user, password)) {
+                c.setReadOnly(true);
+                SchemaReader reader = new SchemaReader(c, selection);
+                schema = reader.read();
+            }
+            DefinitionGenerator.Result result = new DefinitionGenerator(schema, selection,
+                    new DefinitionGenerator.Options(serverName, url, user, passwordEnv)).write(dir, force);
+
+            // Check the output loads and starts against the same database.
+            ServerDefinition def = new DefinitionLoader(environment).load(dir);
+            try (ModelRuntime model = ModelRuntime.start(def, drivers)) {
+                ToolService tools = new ToolService(model);
+                out.println("Wrote " + dir);
+                out.println("  entities: " + String.join(", ", model.entities().keySet()));
+                out.println("  relationships: " + result.relationships().size());
+                out.println("  tools: " + tools.tools().size());
+            }
+            for (String w : result.warnings()) {
+                out.println("  warning: " + w);
+            }
+            out.println("Next: review model/eclipselink-orm.xml, then run with --definition " + dir);
+            return 0;
+        } catch (DefinitionException e) {
+            System.err.println("init failed: " + e.getMessage());
+            return 1;
+        } catch (SQLException e) {
+            // The driver message may name the URL and user, never the password, which is not in the URL.
+            System.err.println("init failed: database error: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    /** For tests. */
+    public static int run(String[] args, Map<String, String> env, PrintStream out) {
+        return new InitCommand(env::get, out).run(args);
+    }
+}

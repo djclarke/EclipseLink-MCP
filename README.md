@@ -80,6 +80,29 @@ java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar --definition ./hr-db 
 
 The definition never holds a password. It refers to one: `${env:SALES_DB_PASSWORD}`, or `${file:/run/secrets/sales-db-password}` for a mounted secret. A literal password fails validation. Other sources, such as an OS keychain or a cloud secret manager, are planned as optional resolver plugins. See [spec 5.3](docs/server-definition.md#53-secrets-and-credentials) and the [roadmap](docs/roadmap.md).
 
+### Generate a definition from a database
+
+`init` reads JDBC metadata for the tables you select and writes a starter definition:
+
+```sh
+DB_PW=reader java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar init \
+  --url jdbc:h2:file:$PWD/target/test-db/sales --user MCP_READER --password-env DB_PW \
+  --table ORDERS --follow-fks 1 --fk-direction both --out /tmp/sales-gen
+```
+
+It never scans a whole database unless asked (`--include '*'`). Tables come from names, glob or regex patterns, schemas, table types and foreign key expansion, on the command line or in a `selection.yaml`. See [spec section 7](docs/server-definition.md#7-generating-a-starter-definition-init).
+
+### Refine it, with or without the skill
+
+`edit` makes validated model changes (rename, remove, unlink, describe), and `call` prints the JSON a tool returns:
+
+```sh
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar edit --definition /tmp/sales-gen rename-entity Orders Order
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar call --definition /tmp/sales-gen find_entity '{"entity":"Order","id":1001}'
+```
+
+The Claude skill [`skills/configure-server-from-schema`](skills/configure-server-from-schema/SKILL.md) drives the whole loop with you: table selection, `init`, simplification, then named queries and reports. To use it, copy the folder to `~/.claude/skills/` or to a project's `.claude/skills/`.
+
 ### What the POC serves
 
 The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, two named reports and one named query. From that the server exposes:
@@ -91,7 +114,7 @@ The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an
 
 ### Not in the POC yet
 
-Compared with [the spec](docs/server-definition.md): JSON is produced from the EclipseLink mappings directly, with the default shape, not yet through MOXy bindings (so `model.bindings` overrides are rejected); no prompts or completions; no `model.schema`; paging cursors are offsets; no HTTP transport; no design-time skills or schema introspection yet (the ORM XML is written by hand).
+Compared with [the spec](docs/server-definition.md): JSON is produced from the EclipseLink mappings directly, with the default shape, not yet through MOXy bindings (so `model.bindings` overrides are rejected); no prompts or completions; no `model.schema`; paging cursors are offsets; no HTTP transport; only the first design-time skill (the sample ORM XML is hand-written; `init` generates a starter one).
 
 ## Stack
 
