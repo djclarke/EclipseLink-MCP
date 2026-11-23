@@ -19,6 +19,8 @@ EclipseLink MCP is a **factory for MCP servers**, not one server. A single gener
 
 One instance per database account also gives one instance per trust boundary: callers who need different access get a different instance.
 
+**Scope (decided 2026-11-23):** each server definition covers **one database and one mapped model** (one persistence unit). Multi-model and multi-database support is future work (4.6), but the runtime is designed so it could later host several definitions: no static or JVM-wide state, and each definition owns its own EntityManagerFactory, pool, cache and tool registry.
+
 It is delivered in two forms:
 
 - **Standalone runtime (the POC).** An executable JAR (later a container image) that takes a JDBC connection and a config file and serves MCP, with no code to write.
@@ -102,6 +104,8 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 ### 4.6 Later milestones
 
 - Ad hoc report queries are out of scope (see 4.5).
+- **Multi-definition hosting:** one runtime process serving several definitions, each with its own persistence unit (EntityManagerFactory, session, pool and cache, possibly different databases and vendors), exposed as separate MCP endpoints or with tools namespaced per definition. Saves JVMs but merges trust boundaries in one process, so it waits for the security model (section 5).
+- **Composite definitions:** one model spanning several databases through EclipseLink composite persistence units (SessionBroker), with relationships between member units. Constraints: a single query cannot join across databases, so `query_entities` and named reports run against one member, or results are merged in memory with strict limits; writes across members would need JTA two-phase commit. Read-only use fits first.
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
 - Change notifications as MCP resource subscriptions.
 
@@ -117,6 +121,24 @@ The repo ships its own Claude skills for working with the factory. They double a
 - FR-25: Self-contained (decided 2026-11-23). The skills live in this repo and do not depend on the EclipseLink-JPA-skills repo. Shared material can be factored out later if that proves useful.
 - FR-26: Timing. Skills are written once the POC config format settles, so they do not churn with it.
 
+### 4.8 Design-time workflow
+
+The work splits into **design time** and **run time**. At design time, the skills (4.7) drive an iterative session in which Claude and the user connect to the database, explore the schema, choose the tables of interest and shape the mappings. At run time, the server only loads the result.
+
+- FR-27: Live working context. During the session, EclipseLink dynamic persistence plus default MOXy JSON bindings give a working JPA context over the chosen tables, which can run queries and convert results to JSON before any config is final.
+- FR-28: Iterate with feedback. After each change (adding a table, renaming an attribute, fixing a relationship, defining a report), the skill runs a sample query and shows the JSON that agents would receive, so the user sees the effect immediately.
+- FR-29: Defaults first, overrides second. The session starts from default mappings and default JSON bindings, and records overrides only where the user wants a different name, shape or relationship. Overrides are kept minimal so the config stays readable.
+- FR-30: Save the outcome as files. The session writes reviewable files that are versioned in git and loaded by the runtime, so the same files always produce the same server:
+  - `eclipselink-orm.xml` for the dynamic entities and their mappings;
+  - MOXy bindings (e.g. `eclipselink-oxm.json` or `.xml`) for the JSON shape;
+  - the named report definitions (4.5);
+  - a small deployment config naming the connection, the files above and tool settings.
+
+  The layout, formats, packaging, hosting and MCP surface of these files are specified in [server-definition.md](server-definition.md).
+- FR-31: Stay inside the account. The schema scan runs as the shared database account (5.0) and only sees what that account can read.
+- FR-32: Re-entrant. The session can reopen existing files to add tables or reports later, rather than starting over.
+
+## 5. Security requirements
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
 
