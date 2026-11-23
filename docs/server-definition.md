@@ -27,6 +27,8 @@ sales-db/                          # one server definition
 │   └── open-orders-by-customer.yaml
 ├── queries/
 │   └── order-details.yaml         # one named entity query per file, with its graph (optional)
+├── writes/
+│   └── ship-order.yaml            # one named write operation per file; off unless tools.writes (optional)
 ├── prompts/
 │   └── quarterly-review.md        # author-defined MCP prompts (optional)
 ├── drivers/                       # JDBC driver JARs (optional, see 3.3)
@@ -67,6 +69,8 @@ tools:
   find_entity: true
   query_entities: true
   reports: true                     # one tool per file in reports/
+  queries: true                     # one tool per file in queries/
+  writes: false                     # default false: read-only. true exposes the operations in writes/ (2.7)
 limits:
   defaultPageSize: 50
   maxPageSize: 500
@@ -163,7 +167,7 @@ graph:                              # what is loaded AND what is returned
   - lines.product.category
 ```
 
-- `graph` paths follow mapped relationships. Each item always includes its key, and every nested object its key, so results can be joined back to `find_entity`. A path ending in a relationship (`customer`) returns that entity's default shape: basic attributes plus to-one references.
+- `graph` paths follow mapped relationships. Each item always includes its key (and its version attribute, if it has one, 4.9), and so does every nested object, so results can be joined back to `find_entity`. A path ending in a relationship (`customer`) returns that entity's default shape: basic attributes plus to-one references.
 - Filter grammar, parameters and paging are the same as for reports (2.4). Callers supply parameters and paging only, never the graph or filter.
 - Name `entities` is reserved (`query_entities`). Startup fails on an unknown path, an orderBy through a to-many relationship, or an undeclared or unused parameter (6).
 
@@ -183,6 +187,50 @@ Use report_sales_by_region for {{quarter}} and the previous quarter,
 compare totals by region, and list the three largest changes with a short reason
 from open orders if relevant.
 ```
+
+### 2.7 Named write operations: `writes/*.yaml`
+
+A server is **read-only by default** (requirements 4.10). Writes are enabled one business scenario at a time: each file in `writes/` defines one write tool, and none is exposed unless the descriptor sets `tools.writes: true`. The files are validated at startup either way, so a disabled operation cannot rot unnoticed.
+
+```yaml
+name: ship_order                    # the tool name, as written
+title: Ship an order
+description: Mark an open order shipped, with the time it shipped.
+action: update                      # create | update | delete
+root: Order
+set:                                # attributes the caller supplies
+  shippedAt: { required: true, description: "When it shipped, with its offset" }
+fixed:                              # values the server sets; the caller cannot change them
+  status: SHIPPED
+condition:                          # the row must match, or the call fails with PRECONDITION_FAILED
+  { path: status, op: eq, value: OPEN }
+```
+
+```yaml
+name: add_order_line
+title: Add an order line
+description: Add a product line to an open order.
+action: create
+root: OrderLine                     # locked through its order (4.9): the caller passes orderVersion
+set:
+  order:    { required: true }      # a to-one relationship: the caller passes the target's key
+  product:  { required: true }
+  quantity: { required: true }
+  price:    { required: true }
+condition: { path: order.status, op: eq, value: OPEN }
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | Tool name, `[a-z][a-z0-9_]*`. Name it for the scenario (`ship_order`, `add_order_line`). It cannot start with `report_` or `query_`, or reuse a built-in tool name. |
+| `action` | `create` inserts one root entity, `update` changes one, `delete` removes one. One entity per call. |
+| `root` | The entity written. `edit rename-entity` updates it, as for reports and queries. |
+| `set` | Attributes the caller supplies. Basic attributes, or owning to-one relationships, whose value is the target's key; the target must exist. Keys, versions and to-many relationships cannot be set. `required` (default false) and `allowed` (a list of permitted values, in the contract's formats) are optional. On update, an optional attribute the caller leaves out is unchanged, and an explicit `null` clears it. |
+| `fixed` | Values the server sets on every call, in the same formats. An attribute is in `set` or `fixed`, not both. |
+| `condition` | A filter in the shared grammar (4.3), with values only (no `param`). It is checked in the same transaction: before the change for update and delete, and on the new row for create, so paths through relationships work (`order.status`). |
+| `locking` | Omitted (default): the entity's lock (4.9) is required. `none`: allowed only on an entity that has no version and is not locked through a relationship, and says so in the tool description (last write wins). |
+
+Rules checked at startup (6): the root exists; every `set`, `fixed` and `condition` path exists and fits its rule above; `fixed` and `allowed` values convert to the attribute's type; and the entity has a lock, or the file says `locking: none`. Keys of a created entity are caller input unless the database generates them (4.3). Whether every `NOT NULL` column gets a value is left to the database, which reports `CONSTRAINT_VIOLATION`.
 
 ## 3. Packaging and running
 
@@ -252,14 +300,15 @@ The generated `README.md` in each definition includes these snippets with the ri
 
 - `serverInfo`: `name`, `title`, `version` from the descriptor.
 - `instructions`: the descriptor's `instructions`, then a generated summary: entity names with one-line descriptions, report tool names, and the rules agents should know (read-only; use paging; prefer report tools for aggregates; results are limited to what the server's database account can read).
-- Capabilities declared: `tools`, `resources`, `prompts`, `logging`, `completions`. Not used: `sampling`, `elicitation`, `roots` (no writes, no client file access).
+- Capabilities declared: `tools`, `resources`, `prompts`, `logging`, `completions`. Not used: `sampling`, `elicitation`, `roots` (no client file access; write approval is left to the client's confirmation of destructive tools for now).
+- With write tools exposed, the generated summary says so, lists them, and gives the locking rules in 4.9 (send back the version you read; on `CONFLICT`, read again before retrying).
 
 ### 4.2 Common conventions
 
-- All tools are read-only and carry annotations `readOnlyHint: true`, `idempotentHint: true`, `destructiveHint: false`, `openWorldHint: false`.
+- Read tools carry annotations `readOnlyHint: true`, `idempotentHint: true`, `destructiveHint: false`, `openWorldHint: false`. Write tools (2.7) carry `readOnlyHint: false`, `idempotentHint: false`, `openWorldHint: false`, and `destructiveHint: true` for update and delete (`false` for create), so clients can ask the user first.
 - Every tool declares an `inputSchema` and an `outputSchema`, and returns `structuredContent` matching it plus a short text summary in `content` (FR-12).
 - Paging: input `pageSize` (default and max from `limits`) and `cursor` (opaque, from a previous result). Output `nextCursor` is present only when more rows exist.
-- Errors are tool results with `isError: true` and `structuredContent: { "error": { "code": ..., "message": ..., "details": ... } }`. Codes: `UNKNOWN_ENTITY`, `UNKNOWN_ATTRIBUTE`, `INVALID_FILTER`, `INVALID_PARAMETER`, `NOT_FOUND`, `LIMIT_EXCEEDED`, `TIMEOUT`, `DATABASE_ERROR` (message sanitized; no SQL or credentials).
+- Errors are tool results with `isError: true` and `structuredContent: { "error": { "code": ..., "message": ..., "details": ... } }`. Codes: `UNKNOWN_ENTITY`, `UNKNOWN_ATTRIBUTE`, `INVALID_FILTER`, `INVALID_PARAMETER`, `NOT_FOUND`, `LIMIT_EXCEEDED`, `TIMEOUT`, `DATABASE_ERROR` (message sanitized; no SQL or credentials). Write tools add `CONFLICT`, `PRECONDITION_FAILED`, `ALREADY_EXISTS`, `CONSTRAINT_VIOLATION` and `PERMISSION_DENIED` (4.9).
 - Entity JSON is produced by MOXy from the model's bindings, so tool output and `describe_entity` schemas always agree.
 - Numbers, dates and times follow one fixed contract (4.2.1).
 
@@ -359,6 +408,37 @@ Output: `{ "query": "order_details", "entity": "Order", "items": [ { "id": 1004,
 
 The tool description lists the graph, so agents can pick the query whose shape fits the question. Each page is loaded as described in 4.8.
 
+#### Write tools (one per named write operation)
+
+Exposed only with `tools.writes: true` (2.7). Input, by action, built from the entity's mappings:
+
+| Action | Input |
+|---|---|
+| `create` | the key attributes (unless the key is generated by the database), the `set` attributes, and the lock version when the entity is locked through a relationship |
+| `update` | `id` (as for `find_entity`), the lock version, and the `set` attributes |
+| `delete` | `id` and the lock version |
+
+The lock version input is named after the version attribute (`version`) for an entity with its own, or `<relationship>Version` (`orderVersion`) for one locked through a relationship (4.9). It is required.
+
+```json
+{ "id": 1002, "version": 1, "shippedAt": "2026-11-23T10:30:00-05:00" }
+```
+
+Output:
+
+```json
+{ "operation": "ship_order", "action": "update", "entity": "Order",
+  "item": { "id": 1002, "version": 2, "status": "SHIPPED", "shippedAt": "2026-11-23T10:30:00-05:00", "...": "..." } }
+```
+
+```json
+{ "operation": "add_order_line", "action": "create", "entity": "OrderLine",
+  "item": { "id": 1000, "quantity": 2, "price": "25.00", "order": { "id": 1002 }, "product": { "id": 1 } },
+  "locked": { "entity": "Order", "id": 1002, "version": 3 } }
+```
+
+`item` is the entity after the change in its default shape (depth 0), including its version. `locked` appears when the lock is a relationship's target, with that entity's new version. A delete returns `{ "operation", "action": "delete", "entity", "id", "deleted": true }`, plus `locked` where it applies. Each call is one transaction.
+
 ### 4.4 Resources
 
 | URI | Content |
@@ -417,6 +497,33 @@ Relationships in the model are lazy. Rendering a page of entities one lazy load 
 In both options, one graph drives the JPA load plan (batch reads) and the MOXy object graph. That keeps what is loaded and what is serialized the same, so marshalling never touches an unloaded relationship.
 
 *As built in the POC:* named queries, graph-driven IN batch loading, foreign-key references and read-only queries are implemented and tested, including the statement counts above. JSON is still rendered by the POC's descriptor-based renderer with the same semantics as option A. Rendering through a MOXy context built on the dynamic entity classes is the next step (EclipseLink's JPA-RS already builds MOXy contexts over JPA entities, which is the precedent to follow). Option B is not built.
+
+### 4.9 Optimistic locking
+
+Every write is checked with optimistic locking, and the server keeps no state between calls (requirements FR-44 to FR-47).
+
+**Where the version lives.** An entity has a lock when:
+
+- it has a **version attribute** (an ORM `<version>` mapping on an integer column, as `init` generates for recognized columns, 7.4), or
+- it is **locked through a relationship**: its descriptor property `mcp.lock-through` names an owning to-one relationship whose target has a version attribute. The sample's `OrderLine` is locked through `order`, because ORDER_LINE has no version column and an order's lines belong to the order.
+
+`edit set-version`, `unset-version` and `lock-through` set these up (7.5). An entity cannot have both, and the target of `lock-through` must have its own version.
+
+**Versions travel in the JSON.** Every entity item returned by a read tool includes its version attribute, in the default shape and whenever `select` paths or a query graph are used, just like its key. `describe_entity` marks the attribute `"version": true`, or names the relationship an entity is locked through. The agent sends back the version it read, and every write returns the new version (in `item`, or in `locked`), so a sequence of changes needs no extra reads and the server needs no session.
+
+**What a write does**, in one transaction:
+
+1. Reads the row by key (for update and delete) and the lock holder: the row itself, or the relationship's target (for create, the target named in the input).
+2. Compares the lock holder's current version with the caller's. A difference is `CONFLICT`, with `details: { entity, id, expectedVersion, currentVersion }` and nothing changed.
+3. Checks the `condition` (on the new row for create, after it is flushed). A mismatch is `PRECONDITION_FAILED`.
+4. Applies the change. EclipseLink writes `UPDATE ... SET VERSION = v + 1 ... WHERE ID = ? AND VERSION = v` (or `DELETE ... WHERE ... AND VERSION = v`). A lock held through a relationship is incremented with `OPTIMISTIC_FORCE_INCREMENT`, so adding, changing or removing a line also updates its order's version.
+5. Commits. If another writer changed the row between steps 1 and 4, the database matches no row and the call is a `CONFLICT` too, so the check holds across concurrent servers and other applications that maintain the version column.
+
+The `CONFLICT` message tells the agent what to do: read the entity again, check that the change still makes sense with the new data, and retry with the new version. It should not retry blindly.
+
+**Other outcomes.** `NOT_FOUND` (no row with that key, or a relationship target in the input that does not exist), `ALREADY_EXISTS` (a create whose key exists), `CONSTRAINT_VIOLATION` (the database refused the change: not null, unique, foreign key or check; SQLState class 23), `INVALID_PARAMETER` (a value that does not fit its type, its `allowed` list or its column; class 22), and `PERMISSION_DENIED` (the account lacks the grant, 5.0 of the requirements).
+
+*Later:* tables with no version column and no parent to lock through could use EclipseLink's field locking (`CHANGED_COLUMNS`), with the values the agent read as the expected values. Not built.
 
 ## 5. Hosting
 
@@ -518,8 +625,9 @@ The runtime refuses to start, with a clear message, if any of these fail:
 4. OXM bindings refer only to mapped entities and attributes.
 5. Every report: paths, joins, aggregates, parameter types and uses.
 5a. Every named query: graph and orderBy paths, filter, parameter types and uses; per-query bindings refer only to mapped attributes.
+5b. Every write operation (2.7), whether or not `tools.writes` is on, and every entity's lock: version attributes are integers, and `mcp.lock-through` names an owning to-one relationship to an entity with a version.
 6. Every prompt: front matter, argument names used in the body.
-7. Tool name uniqueness (including `report_` names) and MCP name rules.
+7. Tool name uniqueness (including `report_`, `query_` and write operation names) and MCP name rules.
 
 ## 7. Generating a starter definition (`init`)
 
@@ -547,6 +655,7 @@ exclude: ["*_AUDIT", "TMP_*"]          # removes pattern and FK matches; never r
 types: [TABLE, VIEW]                   # JDBC table types; default TABLE
 followForeignKeys: { depth: 1, direction: both }  # outgoing (default) | both; depth 0-10
 keys: { ORDER_SUMMARY_V: [ORDER_ID] }  # key for views or tables that declare no primary key
+versions: { LEGACY_ORDERS: REV_NO, AUDIT_LOG: none }   # version column per table, or none (7.4)
 maxTables: 200                         # fail rather than generate a huge model
 ```
 
@@ -597,6 +706,8 @@ Column, key and foreign key metadata is never read for tables outside the select
   - A foreign key to a selected table's primary key becomes a lazy `many-to-one`, named from the column (`CUSTOMER_ID` → `customer`). Its columns are no longer basic attributes. When the key columns are also part of the primary key, the join columns are written read-only.
   - The target gets the inverse `one-to-many` (`Customer.orders`).
   - A foreign key to an unselected table stays a basic attribute (`productId`).
+- **Version columns** become `<version>` mappings, for optimistic locking (4.9). A column is recognized when it is an integer type, not part of the key or a foreign key, and named `VERSION`, `ROW_VERSION`, `OPT_LOCK`, `OPTLOCK`, `LOCK_VERSION` or `OBJ_VERSION` (any case). `versions:` in the selection names another column for a table, or `none` to skip detection. Entities locked through a parent are declared afterwards with `edit lock-through`.
+- **Generated keys:** a single-column key the database fills in (JDBC `IS_AUTOINCREMENT`, such as an identity column) gets `<generated-value strategy="IDENTITY"/>`, so create operations do not ask the caller for it.
 - **Comments** (`REMARKS`) on tables and columns become `mcp.description` properties.
 - **JSON:** no OXM file. The default bindings apply until the user asks for overrides.
 - **Composite keys:** written as several `<id>` attributes, and `find_entity` takes an `id` object.
@@ -619,6 +730,9 @@ java -jar eclipselink-mcp-server.jar edit --definition <dir> [--drivers <dir>] <
 | `unlink <Entity> <relationship>` | Replaces a to-one relationship with its foreign key column(s) as basic attributes (`product` → `productId`) and removes its inverse |
 | `remove-entity <Entity>` | Removes an entity. To-one references to it are unlinked, and to-many references are removed |
 | `describe <Entity>[.<attr>] <text>` | Sets or replaces `mcp.description`. Empty text removes it |
+| `set-version <Entity> <attr>` | Makes an integer basic attribute the entity's optimistic lock version (4.9) |
+| `unset-version <Entity>` | Turns the version attribute back into a basic attribute. Refused while write operations or `lock-through` rely on it |
+| `lock-through <Entity> <relationship>` | Locks the entity through an owning to-one relationship whose target has a version (`lock-through OrderLine order`). An empty relationship (`""`) removes it |
 
 Every edit is **validated and atomic**. The change is written, and then the whole definition is loaded and started against the database, reports and queries included. If anything fails, the ORM file and every report and query file are restored, and the error is printed ("Edit not applied: Report 'by_region': ... region"). A definition is therefore never left broken. One consequence is that renaming or removing an attribute that a report or query uses is refused until that YAML is updated. The skill therefore simplifies the model before writing reports and queries.
 
@@ -629,6 +743,8 @@ To show the user what agents will see after each step (FR-28), `call` runs one t
 ```
 java -jar eclipselink-mcp-server.jar call --definition <dir> query_order_details '{"region":"EAST","pageSize":2}'
 ```
+
+For a write tool, `call` is a **dry run** by default: it runs the operation in a transaction, flushes it so the database checks constraints and versions, prints the result with `"dryRun": true`, and rolls back. `--commit` applies it. The design-time skill only ever uses the dry run.
 
 The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 
@@ -642,3 +758,4 @@ The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 7. Secret resolver plugins: a `plugins/` folder like `drivers/` (5.3). *Proposed.*
 8. Default naming in `init`: no singularization; the design-time skill proposes renames (7.4). *Proposed.*
 9. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
+10. ~~Writes.~~ *Decided (2026-11-23): read-only by default; named write operations in `writes/`, exposed only with `tools.writes: true`, with required optimistic locking (2.7, 4.9). No generic write tools.*
