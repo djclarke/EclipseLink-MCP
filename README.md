@@ -19,7 +19,7 @@ Requirements phase. See:
 
 ## First milestone (proposed)
 
-A read-only MCP server over a sample schema with `list_entities`, `describe_entity`, `find_entity` and a safe `query` tool, with role-based row and field filtering from day one.
+A read-only MCP server over a sample schema with `list_entities`, `describe_entity`, `find_entity`, a safe `query_entities` tool and `report_query` for multi-table projections, with role-based row and field filtering from day one.
 
 ## Planned stack (to be confirmed)
 

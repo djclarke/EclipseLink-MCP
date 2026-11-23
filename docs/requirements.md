@@ -53,6 +53,7 @@ Provide an MCP server that:
 | `describe_entity` | Attributes, types, keys, relationships and JSON Schema, filtered to what the caller may see |
 | `find_entity` | Fetch by primary key, with optional projection and relationship depth |
 | `query_entities` | Constrained query: entity, filter, sort, projection, paging (see 4.4) |
+| `report_query` | Read-only projection across related entities, with grouping and aggregates (see 4.5) |
 
 - FR-10: Expose entity descriptions as MCP resources as well as tools (so clients can attach schema context).
 - FR-11: All list/query results are paged with a hard maximum page size and a continuation token.
@@ -65,10 +66,20 @@ Provide an MCP server that:
 - FR-15: Never expose native SQL to agents.
 - FR-16: Limits per request: max rows, max relationship depth, query timeout, and max result size in bytes.
 
-### 4.5 Later milestones
+### 4.5 Report queries (read-only projections)
+
+Many agent questions need a flat result built from several tables ("customer name, order count and total by region"). Loading full entity graphs for that is wasteful. EclipseLink's `ReportQuery` returns only the selected values in one SQL statement, without building or caching entities.
+
+- FR-17: Provide a `report_query` tool that takes a root entity, a list of selected attribute paths (navigating relationships, e.g. `customer.name`, `orderLines.product.category`), a structured filter (same format as 4.4), grouping, aggregates (count, sum, avg, min, max), sort and paging, and runs it as an EclipseLink `ReportQuery` (or the equivalent JPQL/Criteria multi-select).
+- FR-18: Joins come from mapped relationships only; the tool does not accept arbitrary join conditions. Inner vs outer join is selectable per path.
+- FR-19: Results are returned as rows of named columns, with a JSON Schema for the row derived from the selected attributes' mapped types.
+- FR-20: Allow named reports in the model config: predefined projections with descriptions and parameters, exposed as their own MCP tools (e.g. `report_sales_by_region`). This lets the data owner publish tuned, reviewed queries for common questions.
+- FR-21: Report queries never return managed entities and never touch the shared object cache, so they are safe for large read-only scans within the limits in FR-16.
+- FR-22 (security): Every entity reached by a selected path or filter must be visible to the caller; its row filters (SR-5, SR-6) apply to the join; and every selected or filtered attribute must be visible to the caller (SR-8). Aggregates over hidden fields are rejected, so totals cannot leak data the caller cannot see row by row.
+
+### 4.6 Later milestones
 
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
-- Aggregations (count, sum, group by) through the structured query tool.
 - Change notifications as MCP resource subscriptions.
 
 ## 5. Security requirements
@@ -131,7 +142,7 @@ claims:
 - NFR-3: Works with common databases (Derby/H2 for the sample, then PostgreSQL, MySQL, Oracle).
 - NFR-4: Startup on a schema of ~200 tables in under 10 seconds (target, to verify).
 - NFR-5: Integration tests run against an embedded sample database with fixed seed data, including tests that prove each role cannot see filtered rows or fields.
-- NFR-6: Connection pooling. *Proposed decision:* use EclipseLink's internal connection pool for milestone 1 (stdio, single caller, H2, read-only), configured through persistence unit properties (`eclipselink.connection-pool.*`). Keep a config switch to use an external `DataSource` instead (e.g. HikariCP, or a container/JNDI pool) for the HTTP, multi-user milestone. Either way, per-caller security comes from EntityManager properties, not separate database connections or credentials per caller (unless VPD push-down needs connection-level context, see SR-7).
+- NFR-6: Connection pooling. *Decided (2026-11-23):* use EclipseLink's internal connection pool for milestone 1 (stdio, single caller, H2, read-only), configured through persistence unit properties (`eclipselink.connection-pool.*`). Keep a config switch to use an external `DataSource` instead (e.g. HikariCP, or a container/JNDI pool) for the HTTP, multi-user milestone. Either way, per-caller security comes from EntityManager properties, not separate database connections or credentials per caller (unless VPD push-down needs connection-level context, see SR-7).
 
 ## 7. Risks
 
