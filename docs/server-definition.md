@@ -242,6 +242,8 @@ HTTP (later milestone): `{ "type": "http", "url": "https://host/mcp" }`.
 
 The client's `env` block keeps the password in clear text in the client's config file. Until a keychain resolver exists (5.3), a desktop user can set the descriptor's password to `${file:/Users/me/.secrets/sales-db.pw}` and leave the password out of `env`. That file should be readable by the user alone. Use an absolute path, because `~` is not expanded.
 
+Clients may start several copies of one server (Claude Desktop starts extra copies for Cowork and Claude Code sessions), so a definition must tolerate concurrent processes. Client/server databases do. An embedded H2 file database needs `;AUTO_SERVER=TRUE` in its URL; `init` adds it, and the runtime explains a locked file in one line instead of failing with a stack trace.
+
 The generated `README.md` in each definition includes these snippets with the right paths and environment variable names.
 
 ## 4. MCP surface

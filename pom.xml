@@ -171,7 +171,7 @@
                                     <classpathScope>test</classpathScope>
                                     <arguments>
                                         <argument>-url</argument>
-                                        <argument>jdbc:h2:file:${project.build.directory}/test-db/sales</argument>
+                                        <argument>jdbc:h2:file:${project.build.directory}/test-db/sales;AUTO_SERVER=TRUE</argument>
                                         <argument>-user</argument>
                                         <argument>sa</argument>
                                         <argument>-script</argument>

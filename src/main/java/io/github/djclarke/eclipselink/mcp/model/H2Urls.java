@@ -1,0 +1,46 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.model;
+
+import java.util.Locale;
+
+/**
+ * H2 embedded file databases lock their file to one process. MCP clients such as Claude Desktop may start
+ * several copies of a server, so file URLs get {@code AUTO_SERVER=TRUE}: the first process serves the file
+ * over a local TCP port and the others connect to it transparently, with the same user and password.
+ */
+public final class H2Urls {
+
+    private H2Urls() {
+    }
+
+    /** True for an embedded H2 file database ({@code jdbc:h2:file:...} or a bare path), not mem/tcp/ssl. */
+    public static boolean isEmbeddedFile(String url) {
+        if (url == null) {
+            return false;
+        }
+        String u = url.toLowerCase(Locale.ROOT);
+        if (!u.startsWith("jdbc:h2:")) {
+            return false;
+        }
+        String rest = u.substring("jdbc:h2:".length());
+        return !rest.startsWith("mem:") && !rest.startsWith("tcp:") && !rest.startsWith("ssl:")
+                && !rest.startsWith("zip:");
+    }
+
+    public static boolean hasAutoServer(String url) {
+        return url.toUpperCase(Locale.ROOT).contains(";AUTO_SERVER=");
+    }
+
+    /** The URL with {@code ;AUTO_SERVER=TRUE} added when it is an embedded file URL without the setting. */
+    public static String shareable(String url) {
+        return isEmbeddedFile(url) && !hasAutoServer(url) ? url + ";AUTO_SERVER=TRUE" : url;
+    }
+}

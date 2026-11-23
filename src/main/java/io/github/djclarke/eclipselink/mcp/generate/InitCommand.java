@@ -23,6 +23,7 @@ import java.util.function.Function;
 import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
 import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
 import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
+import io.github.djclarke.eclipselink.mcp.model.H2Urls;
 import io.github.djclarke.eclipselink.mcp.model.JdbcDrivers;
 import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
 import io.github.djclarke.eclipselink.mcp.tools.ToolService;
@@ -137,6 +138,14 @@ public final class InitCommand {
                 if (password == null) {
                     throw new DefinitionException("Environment variable " + passwordEnv + " is not set");
                 }
+            }
+            // An embedded H2 file is locked to one process; share it so init works beside a running server and
+            // the generated server can run as several copies.
+            String shared = H2Urls.shareable(url);
+            if (!shared.equals(url)) {
+                out.println("Using " + shared.substring(shared.lastIndexOf(';') + 1)
+                        + " so several processes can share the H2 file");
+                url = shared;
             }
             String serverName = name != null ? name
                     : outDir.toAbsolutePath().normalize().getFileName().toString().toLowerCase().replaceAll("[^a-z0-9-]+", "-");
