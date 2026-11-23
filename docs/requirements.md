@@ -105,7 +105,18 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
 - Change notifications as MCP resource subscriptions.
 
-## 5. Security requirements
+### 4.7 Claude skills
+
+The repo ships its own Claude skills for working with the factory. They double as living documentation for the config format.
+
+- FR-24: Skills for the factory's main tasks:
+  - **Configure a server from a schema:** inspect a database, generate the model config, and refine it (names, hidden tables and columns, relationships, descriptions).
+  - **Author named reports:** turn a request such as "sales by region" into a report definition that passes startup validation (FR-22).
+  - **Embed in an app:** add the library to an existing JPA project and expose chosen entities and reports over MCP.
+  - **Validate and troubleshoot:** explain startup failures, mapping mismatches and invalid reports.
+- FR-25: Self-contained (decided 2026-11-23). The skills live in this repo and do not depend on the EclipseLink-JPA-skills repo. Shared material can be factored out later if that proves useful.
+- FR-26: Timing. Skills are written once the POC config format settles, so they do not churn with it.
+
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
 
