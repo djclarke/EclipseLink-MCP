@@ -104,6 +104,7 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 - **Composite definitions:** one model spanning several databases through EclipseLink composite persistence units (SessionBroker), with relationships between member units. Constraints: a single query cannot join across databases, so `query_entities` and named reports run against one member, or results are merged in memory with strict limits; writes across members would need JTA two-phase commit. Read-only use fits first.
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
 - Change notifications as MCP resource subscriptions.
+- **Credential sources:** OS keychain, cloud secret managers (AWS, Azure, GCP, OCI, HashiCorp Vault) and token-based database login, as optional resolver plugins (server-definition 5.3, [roadmap](roadmap.md)).
 
 ### 4.7 Claude skills
 

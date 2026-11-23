@@ -10,6 +10,7 @@
 package io.github.djclarke.eclipselink.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -52,7 +53,8 @@ class DefinitionLoaderTest {
     void literalPasswordIsRejected() throws IOException {
         write("connection:\n  url: jdbc:h2:mem:x\n  password: secret\n");
         DefinitionException e = assertThrows(DefinitionException.class, () -> new DefinitionLoader().load(dir));
-        assertTrue(e.getMessage().contains("environment reference"), e.getMessage());
+        assertTrue(e.getMessage().contains("secret reference"), e.getMessage());
+        assertFalse(e.getMessage().contains("secret\n") || e.getMessage().contains(": secret"), "never echoes the value");
     }
 
     @Test
@@ -90,6 +92,40 @@ class DefinitionLoaderTest {
         DefinitionLoader loader = new DefinitionLoader(Map.of("A", "1")::get);
         assertEquals("x1y", loader.resolve("x${env:A}y", dir));
         assertEquals("dflt", loader.resolve("${env:B:-dflt}", dir));
+    }
+
+    @Test
+    void fileReferencesReadMountedSecrets() throws IOException {
+        Path secrets = Files.createDirectories(dir.resolve("secrets"));
+        Files.writeString(secrets.resolve("db-password"), "pa:ss}word\n");
+        DefinitionLoader loader = new DefinitionLoader(n -> null);
+        assertEquals("pa:ss}word", loader.resolve("${file:secrets/db-password}", dir), "relative, newline removed");
+        assertEquals("pa:ss}word", loader.resolve("${file:" + secrets.resolve("db-password") + "}", dir));
+        assertEquals("none", loader.resolve("${file:secrets/missing:-none}", dir));
+        DefinitionException e = assertThrows(DefinitionException.class,
+                () -> loader.resolve("${file:secrets/missing}", dir));
+        assertTrue(e.getMessage().contains("Secret file not found"), e.getMessage());
+    }
+
+    @Test
+    void passwordFromAFileOrPluginIsAcceptedAndNeverPrinted() throws IOException {
+        Files.writeString(dir.resolve("m.xml"), "<entity-mappings/>");
+        Files.writeString(dir.resolve("pw"), "hunter2\n");
+        write("connection:\n  url: jdbc:h2:mem:x\n  password: ${file:pw}\n");
+        ServerDefinition def = new DefinitionLoader(n -> null).load(dir);
+        assertEquals("hunter2", def.descriptor().connection().password());
+        assertFalse(def.toString().contains("hunter2"), def.toString());
+        assertTrue(def.descriptor().connection().toString().contains("password=****"));
+
+        write("connection:\n  url: jdbc:h2:mem:x\n  password: ${test-vault:sales/db-password}\n");
+        assertEquals("from-vault", new DefinitionLoader(n -> null).load(dir).descriptor().connection().password());
+    }
+
+    @Test
+    void unknownSchemeListsTheAvailableOnes() {
+        DefinitionException e = assertThrows(DefinitionException.class,
+                () -> new DefinitionLoader(n -> null).resolve("${vault:db}", dir));
+        assertTrue(e.getMessage().contains("env, file, test-vault"), e.getMessage());
     }
 
     private void write(String body) throws IOException {

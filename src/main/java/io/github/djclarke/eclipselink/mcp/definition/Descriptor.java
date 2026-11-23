@@ -41,6 +41,14 @@ public record Descriptor(
         public Connection {
             pool = pool == null ? new Pool(null, null) : pool;
         }
+
+        /** Never prints the password, so a logged or printed descriptor cannot leak it. */
+        @Override
+        public String toString() {
+            return "Connection[url=" + url + ", user=" + user + ", password="
+                    + (password == null || password.isEmpty() ? "<none>" : "****") + ", drivers=" + drivers
+                    + ", pool=" + pool + "]";
+        }
     }
 
     public record Pool(Integer min, Integer max) {

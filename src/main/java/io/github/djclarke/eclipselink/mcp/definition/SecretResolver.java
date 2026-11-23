@@ -1,0 +1,34 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.definition;
+
+import java.nio.file.Path;
+
+/**
+ * Resolves secret references such as {@code ${env:DB_PASSWORD}} or {@code ${file:/run/secrets/db-password}} in a
+ * server definition (docs/server-definition.md 5.3). The runtime has {@code env} and {@code file} built in;
+ * more (OS keychain, cloud secret managers) are plugins found with {@link java.util.ServiceLoader}, so the core
+ * runtime stays free of any cloud SDK.
+ *
+ * <p>Implementations must never log or include a resolved value in an exception message.
+ */
+public interface SecretResolver {
+
+    /** The reference scheme, e.g. {@code env}: lower case letters, digits and '-'. */
+    String scheme();
+
+    /**
+     * @param reference the text after {@code scheme:}, e.g. a variable name, a path or a secret id
+     * @param definitionDir the server definition directory, for relative references
+     * @return the secret, or null when it does not exist (a {@code :-default} then applies, if given)
+     * @throws DefinitionException when the reference is malformed or the store cannot be read
+     */
+    String resolve(String reference, Path definitionDir);
+}

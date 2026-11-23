@@ -76,6 +76,10 @@ Only the H2 driver is bundled in the runtime JAR. For any other database, put it
 java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar --definition ./hr-db --drivers ~/jdbc/postgresql
 ```
 
+### Credentials
+
+The definition never holds a password. It refers to one: `${env:SALES_DB_PASSWORD}`, or `${file:/run/secrets/sales-db-password}` for a mounted secret. A literal password fails validation. Other sources, such as an OS keychain or a cloud secret manager, are planned as optional resolver plugins. See [spec 5.3](docs/server-definition.md#53-secrets-and-credentials) and the [roadmap](docs/roadmap.md).
+
 ### What the POC serves
 
 The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, two named reports and one named query. From that the server exposes:

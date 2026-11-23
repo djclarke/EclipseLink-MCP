@@ -87,8 +87,8 @@ logging:
 
 Rules:
 
-- `${env:NAME}` is the only way to supply secrets. A literal password in the descriptor fails validation.
-- `${env:NAME:-default}` supplies a default, and `${definition.dir}` expands to the definition directory. Substitution happens on parsed values, so an environment value cannot change the YAML structure.
+- Secrets are supplied only as references: `${env:NAME}` (environment variable), `${file:PATH}` (file content, e.g. a mounted Docker or Kubernetes secret), or a plugin scheme (5.3). A literal password in the descriptor fails validation.
+- Any reference takes a default with `:-` (`${env:NAME:-default}`), and `${definition.dir}` expands to the definition directory. Substitution happens on parsed values, so an environment value cannot change the YAML structure.
 - Relative paths resolve against the definition directory.
 - Unknown keys fail validation, so typos are caught at startup.
 
@@ -239,6 +239,8 @@ Claude Desktop / Claude Code (`mcpServers`), stdio:
 ```
 
 HTTP (later milestone): `{ "type": "http", "url": "https://host/mcp" }`.
+
+The client's `env` block keeps the password in clear text in the client's config file. Until a keychain resolver exists (5.3), a desktop user can set the descriptor's password to `${file:/Users/me/.secrets/sales-db.pw}` and leave the password out of `env`. That file should be readable by the user alone. Use an absolute path, because `~` is not expanded.
 
 The generated `README.md` in each definition includes these snippets with the right paths and environment variable names.
 
@@ -411,10 +413,40 @@ Each definition is its own process or pod, covering one database and one mapped 
 
 ### 5.3 Secrets and credentials
 
-- Credentials come only from environment variables, which hosts fill from their secret store (client config `env`, Docker/Kubernetes secrets, a cloud secret manager).
-- The definition never contains secrets and can be committed to git as is.
-- The database account should be read-only and limited to the mapped tables; the runtime opens connections read-only where the driver supports it.
-- Credentials never appear in logs, errors (`DATABASE_ERROR` is sanitized) or MCP output.
+The definition never holds a secret, so it can be committed to git as is. Connection settings refer to secrets, and a **secret resolver** turns each reference into a value at startup.
+
+```yaml
+connection:
+  user: ${env:SALES_DB_USER}
+  password: ${file:/run/secrets/sales-db-password}   # or ${env:...}, or a plugin scheme
+```
+
+**Resolvers.**
+
+| Scheme | Source | Status |
+|---|---|---|
+| `env` | Environment variable | Built in (POC) |
+| `file` | File content, trailing line breaks removed; relative to the definition directory | Built in (POC) |
+| `keychain` | macOS Keychain, Windows Credential Manager, Linux Secret Service | Planned: desktop |
+| `aws-sm`, `azure-kv`, `gcp-sm`, `oci-vault`, `vault` | AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, OCI Vault, HashiCorp Vault | Planned: cloud packaging |
+
+A resolver implements `SecretResolver` (`scheme()`, `resolve(reference, definitionDir)`). Plugins are found with Java's `ServiceLoader`, so each cloud provider is a separate optional JAR and the core runtime has no cloud SDK. An unknown scheme fails startup and lists the available ones. *Proposed:* plugins load from a `plugins/` folder (and `--plugins <dir>`) through a child classloader, as JDBC drivers do (3.3). The POC finds plugins on the runtime classpath only.
+
+**Where each fits.**
+
+- **Desktop (stdio):** `env` from the client config works but keeps the password in clear text in that file. `file` with an owner-only file is better. A `keychain` resolver removes the secret from disk entirely.
+- **Containers:** Kubernetes, ECS, Cloud Run and Docker inject secrets as environment variables or mounted files, so `env` and `file` cover them with no plugin.
+- **Cloud, direct from a secret manager:** the provider plugin, authenticated by the workload's own identity (IAM role, managed identity, workload identity). The plugin holds no credentials of its own.
+- **No stored password:** some databases accept a short-lived token from the workload's identity: AWS RDS IAM authentication, Azure AD for Azure SQL and PostgreSQL, Cloud SQL IAM. *Planned:* a token provider hook on the connection that fetches a fresh token as connections are opened, rather than once at startup.
+- **Oracle Wallet:** the Oracle JDBC driver already reads a wallet named in the URL (`jdbc:oracle:thin:@sales_high?TNS_ADMIN=/path/to/wallet`), so the descriptor carries no password and no resolver is needed. Documented, not built.
+
+**Handling rules** (built where marked):
+
+- Secrets never appear in logs, errors or MCP output. No tool or resource exposes connection settings. `DATABASE_ERROR` messages are sanitized (built).
+- The descriptor's `toString` masks the password, so a printed or logged definition cannot leak it (built). Resolver errors name the reference, never the value (built).
+- Secrets are resolved once at startup, and are held only in the connection settings passed to EclipseLink. Rotation needs a restart until the token provider hook exists.
+- *Proposed:* warn at startup when a `file` secret can be read by other users.
+- The database account should be read-only and limited to the mapped tables. The runtime opens connections read-only where the driver supports it.
 
 ### 5.4 HTTP endpoint (later milestone)
 
@@ -462,4 +494,5 @@ The runtime refuses to start, with a clear message, if any of these fail:
 3. ~~Which JDBC drivers ship with the runtime.~~ *Decided: H2 only; others from a drivers directory (3.3).*
 4. Whether the bundled JAR (`package` command) is in the POC or follows it. *Proposed: follows.*
 6. Per-use-case JSON shapes: object graphs over shared bindings by default, separate binding sets opt-in (4.8). *Proposed.*
-7. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
+7. Secret resolver plugins: a `plugins/` folder like `drivers/` (5.3). *Proposed.*
+8. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
