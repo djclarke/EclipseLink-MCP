@@ -85,6 +85,7 @@ logging:
 Rules:
 
 - `${env:NAME}` is the only way to supply secrets. A literal password in the descriptor fails validation.
+- `${env:NAME:-default}` supplies a default, and `${definition.dir}` expands to the definition directory. Substitution happens on parsed values, so an environment value cannot change the YAML structure.
 - Relative paths resolve against the definition directory.
 - Unknown keys fail validation, so typos are caught at startup.
 

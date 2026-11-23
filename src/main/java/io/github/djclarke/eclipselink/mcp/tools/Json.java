@@ -1,0 +1,35 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.tools;
+
+import java.nio.charset.StandardCharsets;
+
+import tools.jackson.databind.json.JsonMapper;
+
+/** JSON text for tool results and size limits. */
+public final class Json {
+
+    private static final JsonMapper MAPPER = JsonMapper.builder().build();
+
+    private Json() {
+    }
+
+    public static String write(Object value) {
+        return MAPPER.writeValueAsString(value);
+    }
+
+    public static String writePretty(Object value) {
+        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(value);
+    }
+
+    public static long size(Object value) {
+        return write(value).getBytes(StandardCharsets.UTF_8).length;
+    }
+}

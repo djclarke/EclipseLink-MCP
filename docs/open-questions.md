@@ -5,14 +5,14 @@ Decisions to make before or during the first prototype. Proposed answers are mar
 ## Stack
 
 1. **MCP library:** official MCP Java SDK (`io.modelcontextprotocol.sdk`), or a framework (Spring AI MCP, Quarkus MCP)? *Decided (2026-11-23): the official MCP Java SDK ([modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk)) core module, without Spring, in the runtime. It is the reference implementation, tracks the spec (stdio, streamable HTTP, OAuth), and is plain Java. Spring AI MCP (e.g. a Spring Boot starter) and the Quarkus MCP server extension are possible later adapters, not the base. LangChain4j is mainly client-side and not used.*
-2. **Java and build:** *Proposed: Java 21, Maven.*
-3. **EclipseLink version:** build on released 5.0.x, or track 6.0.0-SNAPSHOT? Does the prototype need anything only in 6.0?
-4. **Transport for milestone 1:** stdio only, or streamable HTTP too? OAuth needs HTTP. *Proposed: stdio first with roles from config, HTTP + OAuth in milestone 2.*
-4a. **Module layout:** one Maven module, or a core module plus a launcher module? *Proposed: one module for the POC, now that there is no embeddable library (requirements 2); keep model building, binding and tools in separate packages so a split stays easy.*
+2. **Java and build:** *Decided (2026-11-23): Java 21 and Maven.*
+3. **EclipseLink version:** build on released 5.0.x, or track 6.0.0-SNAPSHOT? *Decided (2026-11-23): latest 5.0.x release (5.0.2 in the POC).*
+4. **Transport for milestone 1:** stdio only, or streamable HTTP too? *Decided (2026-11-23): stdio first; streamable HTTP + OAuth in a later milestone.*
+4a. **Module layout:** one Maven module, or a core module plus a launcher module? *As built: one module for the POC, with model building, JSON, query and tools in separate packages so a split stays easy.*
 
 ## Model
 
-5. **Sample database:** which schema? Options: a small HR/Orders schema written for this repo, Sakila (MySQL sample), Chinook, or Oracle HR. *Proposed: a small Orders/Customers/Products schema on H2 or Derby so tests are self-contained.*
+5. **Sample database:** *Decided (2026-11-23): a small Orders/Customers/Products/OrderLine schema on H2, created by the Maven test harness (`mvn test` builds it at `target/test-db/sales`, with a read-only `MCP_READER` account).*
 6. **Model source:** introspection only, or also existing persistence units with static entities? *Decided: generated dynamic entities only (codeless).*
 7. **Override format:** `eclipselink-orm.xml`, or a simpler YAML/JSON model config that the server turns into mappings?
 8. **Naming:** how to derive entity/attribute names from table/column names (camel case, singularization)?

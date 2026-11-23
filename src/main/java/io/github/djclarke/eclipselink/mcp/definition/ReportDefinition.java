@@ -1,0 +1,69 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.definition;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * A named report, one file in {@code reports/}. See docs/server-definition.md section 2.4.
+ *
+ * @param filter filter tree in the shared filter grammar; leaves may use {@code param} instead of {@code value}
+ */
+public record ReportDefinition(
+        String name,
+        String title,
+        String description,
+        String root,
+        List<Column> select,
+        Map<String, Object> filter,
+        List<String> groupBy,
+        List<Ordering> orderBy,
+        LinkedHashMap<String, Parameter> parameters,
+        Map<String, String> joins) {
+
+    public ReportDefinition {
+        select = select == null ? List.of() : select;
+        groupBy = groupBy == null ? List.of() : groupBy;
+        orderBy = orderBy == null ? List.of() : orderBy;
+        parameters = parameters == null ? new LinkedHashMap<>() : parameters;
+        joins = joins == null ? Map.of() : joins;
+    }
+
+    /** Tool name for this report. */
+    public String toolName() {
+        return "report_" + name;
+    }
+
+    /**
+     * One output column: an attribute path, or an aggregate over a path.
+     *
+     * @param aggregate one of count, sum, avg, min, max; null for a plain attribute
+     */
+    public record Column(String path, String aggregate, String as) {
+    }
+
+    public record Ordering(String by, String dir) {
+        public boolean descending() {
+            return "desc".equalsIgnoreCase(dir);
+        }
+    }
+
+    /**
+     * @param type one of string, integer, decimal, date, boolean
+     */
+    public record Parameter(String type, Boolean required, String description) {
+        public Parameter {
+            type = type == null ? "string" : type;
+            required = required != null && required;
+        }
+    }
+}

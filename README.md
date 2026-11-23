@@ -16,21 +16,67 @@ A role-based security model (row filters, field visibility and tools per caller)
 
 ## Status
 
-Requirements phase. See:
+POC: a working, read-only MCP server over stdio. See:
 
 - [docs/requirements.md](docs/requirements.md) for goals, scope and functional/security requirements
 - [docs/server-definition.md](docs/server-definition.md) for the server definition: packaging, hosting and the full MCP surface (tools, resources, prompts)
-- [docs/open-questions.md](docs/open-questions.md) for decisions still to make
+- [docs/open-questions.md](docs/open-questions.md) for decisions made and still to make
 
-## First milestone: POC
+## Quick start
 
-The standalone runtime, read-only, over a sample schema, with `list_entities`, `describe_entity`, `find_entity`, a safe `query_entities` tool and named report tools for multi-table projections. Access is whatever the one shared database account can read; the security model follows the POC.
+Requires Java 21 and Maven.
 
-## Planned stack
+```sh
+mvn package          # builds target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar and runs the tests
+```
 
-- MCP: the official [MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk) core module, no Spring (decided). Spring and Quarkus integrations may come later as adapters.
-- Java 21 and Maven (proposed).
-- EclipseLink 5.0.x or 6.0.0-SNAPSHOT, and the sample database: still open, see [open questions](docs/open-questions.md).
+The tests create the sample "existing" database, an H2 file at `target/test-db/sales` with customers, products, orders and order lines, plus a read-only `MCP_READER` account. To run the sample server against it:
+
+```sh
+export SALES_DB_URL="jdbc:h2:file:$PWD/target/test-db/sales"
+export SALES_DB_USER=MCP_READER SALES_DB_PASSWORD=reader
+
+# check the definition against the database
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar --definition samples/sales-db --validate
+
+# serve MCP on stdio
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar --definition samples/sales-db
+```
+
+Claude Desktop / Claude Code (`mcpServers`):
+
+```json
+{
+  "mcpServers": {
+    "sales-db": {
+      "command": "java",
+      "args": ["-jar", "/path/to/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar",
+               "--definition", "/path/to/EclipseLink-MCP/samples/sales-db"],
+      "env": {
+        "SALES_DB_URL": "jdbc:h2:file:/path/to/EclipseLink-MCP/target/test-db/sales",
+        "SALES_DB_USER": "MCP_READER",
+        "SALES_DB_PASSWORD": "reader"
+      }
+    }
+  }
+}
+```
+
+### What the POC serves
+
+The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, and two named reports. From that the server exposes:
+
+- tools `list_entities`, `describe_entity`, `find_entity`, `query_entities` (structured filters, select paths, sorting, paging, optional count), and `report_sales_by_region` and `report_open_orders_by_customer` (EclipseLink `ReportQuery`, parameters and paging only);
+- resources `eclipselink://model`, `eclipselink://entity/{name}` and `eclipselink://report/{name}`;
+- generated server instructions, read-only tool annotations, agent-facing error codes and an audit log line per call (stderr).
+
+### Not in the POC yet
+
+Compared with [the spec](docs/server-definition.md): JSON is produced from the EclipseLink mappings directly, with the default shape, not yet through MOXy bindings (so `model.bindings` overrides are rejected); no prompts or completions; no `model.schema`; paging cursors are offsets; no HTTP transport; no design-time skills or schema introspection yet (the ORM XML is written by hand).
+
+## Stack
+
+Java 21, Maven, EclipseLink 5.0.2 (dynamic persistence), the official [MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk) 2.2.0 core (no Spring), Jackson 3 for YAML, H2 for the sample and tests.
 
 ## License
 
