@@ -1,0 +1,292 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.generate;
+
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.TreeMap;
+import java.util.regex.Pattern;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+
+/**
+ * Reads JDBC metadata for the tables a {@link TableSelection} selects, and only those (docs/server-definition.md
+ * 7.3). Table lookups go to the database by exact name or by a LIKE pattern derived from a glob; only regex
+ * patterns list the table names of a schema. Columns, keys and foreign keys are read per selected table.
+ */
+public final class SchemaReader {
+
+    private final DatabaseMetaData meta;
+    private final TableSelection selection;
+    private final String escape;
+    private final List<String> warnings = new ArrayList<>();
+    /** Metadata calls made, for tests that check reads stay scoped. */
+    private int tableLookups;
+
+    private record Key(String schema, String name) {
+        @Override
+        public String toString() {
+            return schema == null ? name : schema + "." + name;
+        }
+    }
+
+    private record Found(String catalog, String schema, String name, String type, String remarks) {
+        Key key() {
+            return new Key(schema, name);
+        }
+    }
+
+    public SchemaReader(Connection connection, TableSelection selection) throws SQLException {
+        this.meta = connection.getMetaData();
+        this.selection = selection;
+        this.escape = meta.getSearchStringEscape();
+        if (selection.isEmpty()) {
+            throw new DefinitionException("Select tables with 'tables' or 'include' (use include: [\"*\"] "
+                    + "for every table in the selected schemas); the generator never scans a whole database "
+                    + "by default");
+        }
+        // No schemas given: the connection's current schema (or any schema, for drivers without one).
+        this.schemas = selection.schemas().isEmpty() ? currentSchema(connection) : selection.schemas().stream()
+                .map(this::identifier).toList();
+    }
+
+    private final List<String> schemas;
+
+    public int tableLookups() {
+        return tableLookups;
+    }
+
+    public SchemaModel read() throws SQLException {
+        Map<Key, Found> selected = new LinkedHashMap<>();
+        // 1. Explicit tables: exact lookups.
+        for (String t : selection.tables()) {
+            String schema = null;
+            String name = t;
+            int dot = t.indexOf('.');
+            if (dot > 0 && !t.startsWith("\"")) {
+                schema = identifier(t.substring(0, dot));
+                name = t.substring(dot + 1);
+            }
+            List<Found> found = new ArrayList<>();
+            for (String s : schema != null ? List.of(schema) : schemas) {
+                found.addAll(lookup(s, identifier(name), true));
+            }
+            if (found.isEmpty()) {
+                throw new DefinitionException("Table " + t + " not found in schema(s) " + schemaText()
+                        + " (or the account cannot see it)");
+            }
+            found.forEach(f -> selected.putIfAbsent(f.key(), f));
+        }
+        // 2. Include patterns: LIKE for globs, names-only listing for regexes; excludes apply.
+        for (String p : selection.include()) {
+            Pattern re = TableSelection.pattern(p);
+            String like = p.startsWith("re:") ? null : TableSelection.likePattern(identifier(p), escape);
+            for (String s : schemas) {
+                for (Found f : lookup(s, like == null ? "%" : like, false)) {
+                    if (re.matcher(f.name()).matches() && !excluded(f.name())) {
+                        selected.putIfAbsent(f.key(), f);
+                    }
+                }
+            }
+        }
+        // 3. Foreign key expansion from the seeds, breadth first, to the configured depth.
+        Map<Key, List<SchemaModel.ForeignKey>> imported = new TreeMap<>(
+                (a, b) -> a.toString().compareTo(b.toString()));
+        int depth = selection.followForeignKeys().depth();
+        Deque<Key> frontier = new ArrayDeque<>(selected.keySet());
+        for (int hop = 0; hop < depth && !frontier.isEmpty(); hop++) {
+            Deque<Key> next = new ArrayDeque<>();
+            for (Key k : frontier) {
+                Found f = selected.get(k);
+                List<SchemaModel.ForeignKey> fks = importedKeys(f);
+                imported.put(k, fks);
+                List<Key> related = new ArrayList<>();
+                fks.forEach(fk -> related.add(new Key(fk.targetSchema(), fk.targetTable())));
+                if (selection.followForeignKeys().incoming()) {
+                    related.addAll(exportedTo(f));
+                }
+                for (Key r : related) {
+                    if (selected.containsKey(r) || excluded(r.name())
+                            || (r.schema() != null && !schemas.contains(null) && !schemas.contains(r.schema()))) {
+                        continue;
+                    }
+                    for (Found rf : lookup(r.schema(), r.name(), true)) {
+                        selected.put(rf.key(), rf);
+                        next.add(rf.key());
+                    }
+                }
+            }
+            frontier = next;
+        }
+        if (selected.size() > selection.maxTables()) {
+            throw new DefinitionException("The selection matches " + selected.size() + " tables, over maxTables "
+                    + selection.maxTables() + "; narrow it or raise maxTables");
+        }
+        if (selected.isEmpty()) {
+            throw new DefinitionException("The selection matched no tables in schema(s) " + schemaText());
+        }
+
+        // 4. Columns, keys and foreign keys of the selected tables only.
+        List<SchemaModel.Table> tables = new ArrayList<>();
+        for (Found f : selected.values()) {
+            List<SchemaModel.ForeignKey> fks = imported.containsKey(f.key()) ? imported.get(f.key()) : importedKeys(f);
+            List<SchemaModel.ForeignKey> inside = fks.stream()
+                    .filter(fk -> selected.containsKey(new Key(fk.targetSchema(), fk.targetTable()))).toList();
+            tables.add(new SchemaModel.Table(f.catalog(), f.schema(), f.name(), f.type(), blankToNull(f.remarks()),
+                    columns(f), primaryKey(f), inside));
+        }
+        return new SchemaModel(List.copyOf(tables), List.copyOf(warnings));
+    }
+
+    private boolean excluded(String name) {
+        return selection.exclude().stream().anyMatch(p -> TableSelection.pattern(p).matcher(name).matches());
+    }
+
+    private List<Found> lookup(String schema, String namePattern, boolean exact) throws SQLException {
+        tableLookups++;
+        String pattern = exact ? escapeLike(namePattern) : namePattern;
+        List<Found> out = new ArrayList<>();
+        try (ResultSet rs = meta.getTables(selection.catalog(), schema == null ? null : escapeLike(schema), pattern,
+                selection.types().toArray(String[]::new))) {
+            while (rs.next()) {
+                String name = rs.getString("TABLE_NAME");
+                String s = rs.getString("TABLE_SCHEM");
+                if (exact && !name.equals(namePattern) || schema != null && !Objects.equals(s, schema)) {
+                    continue; // LIKE may match more than the exact name
+                }
+                out.add(new Found(rs.getString("TABLE_CAT"), s, name, rs.getString("TABLE_TYPE"),
+                        rs.getString("REMARKS")));
+            }
+        }
+        return out;
+    }
+
+    private List<SchemaModel.Column> columns(Found f) throws SQLException {
+        List<SchemaModel.Column> out = new ArrayList<>();
+        try (ResultSet rs = meta.getColumns(f.catalog(), escapeLike(f.schema()), escapeLike(f.name()), "%")) {
+            while (rs.next()) {
+                if (!f.name().equals(rs.getString("TABLE_NAME"))) {
+                    continue;
+                }
+                out.add(new SchemaModel.Column(rs.getString("COLUMN_NAME"), rs.getInt("DATA_TYPE"),
+                        rs.getString("TYPE_NAME"), rs.getInt("COLUMN_SIZE"), rs.getInt("DECIMAL_DIGITS"),
+                        rs.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls, blankToNull(rs.getString("REMARKS"))));
+            }
+        }
+        return out;
+    }
+
+    private List<String> primaryKey(Found f) throws SQLException {
+        TreeMap<Short, String> byPosition = new TreeMap<>();
+        try (ResultSet rs = meta.getPrimaryKeys(f.catalog(), f.schema(), f.name())) {
+            while (rs.next()) {
+                byPosition.put(rs.getShort("KEY_SEQ"), rs.getString("COLUMN_NAME"));
+            }
+        }
+        if (!byPosition.isEmpty()) {
+            return List.copyOf(byPosition.values());
+        }
+        for (Map.Entry<String, List<String>> e : selection.keys().entrySet()) {
+            if (e.getKey().equalsIgnoreCase(f.name()) || e.getKey().equalsIgnoreCase(f.key().toString())) {
+                return e.getValue().stream().map(this::identifier).toList();
+            }
+        }
+        warnings.add(f.key() + " (" + f.type() + ") has no primary key; skipped. Give one under 'keys' in the "
+                + "selection to include it.");
+        return List.of();
+    }
+
+    private List<SchemaModel.ForeignKey> importedKeys(Found f) throws SQLException {
+        try (ResultSet rs = meta.getImportedKeys(f.catalog(), f.schema(), f.name())) {
+            return foreignKeys(rs);
+        }
+    }
+
+    /** Tables with a foreign key to {@code f}. */
+    private List<Key> exportedTo(Found f) throws SQLException {
+        List<Key> out = new ArrayList<>();
+        try (ResultSet rs = meta.getExportedKeys(f.catalog(), f.schema(), f.name())) {
+            while (rs.next()) {
+                Key k = new Key(rs.getString("FKTABLE_SCHEM"), rs.getString("FKTABLE_NAME"));
+                if (!out.contains(k)) {
+                    out.add(k);
+                }
+            }
+        }
+        return out;
+    }
+
+    private static List<SchemaModel.ForeignKey> foreignKeys(ResultSet rs) throws SQLException {
+        Map<String, List<String[]>> byName = new LinkedHashMap<>();
+        while (rs.next()) {
+            String name = rs.getString("FK_NAME");
+            String id = (name == null ? "" : name) + "|" + rs.getString("PKTABLE_SCHEM") + "|" + rs.getString("PKTABLE_NAME");
+            byName.computeIfAbsent(id, k -> new ArrayList<>()).add(new String[] {
+                    String.valueOf(rs.getShort("KEY_SEQ")), rs.getString("FKCOLUMN_NAME"), rs.getString("PKCOLUMN_NAME"),
+                    rs.getString("PKTABLE_SCHEM"), rs.getString("PKTABLE_NAME"), name});
+        }
+        List<SchemaModel.ForeignKey> out = new ArrayList<>();
+        for (List<String[]> cols : byName.values()) {
+            cols.sort((a, b) -> Short.compare(Short.parseShort(a[0]), Short.parseShort(b[0])));
+            out.add(new SchemaModel.ForeignKey(cols.get(0)[5], cols.stream().map(c -> c[1]).toList(), cols.get(0)[3],
+                    cols.get(0)[4], cols.stream().map(c -> c[2]).toList()));
+        }
+        return out;
+    }
+
+    /** Unquoted names follow the database's identifier case; "Quoted" names are used as written. */
+    private String identifier(String name) {
+        String n = name.strip();
+        if (n.length() > 1 && n.startsWith("\"") && n.endsWith("\"")) {
+            return n.substring(1, n.length() - 1);
+        }
+        try {
+            if (meta.storesUpperCaseIdentifiers()) {
+                return n.toUpperCase(Locale.ROOT);
+            }
+            if (meta.storesLowerCaseIdentifiers()) {
+                return n.toLowerCase(Locale.ROOT);
+            }
+        } catch (SQLException e) {
+            // keep as written
+        }
+        return n;
+    }
+
+    private String escapeLike(String s) {
+        if (s == null || escape == null || escape.isEmpty()) {
+            return s;
+        }
+        return s.replace(escape, escape + escape).replace("%", escape + "%").replace("_", escape + "_");
+    }
+
+    private static List<String> currentSchema(Connection c) throws SQLException {
+        String s = c.getSchema();
+        return java.util.Collections.singletonList(s);
+    }
+
+    private String schemaText() {
+        return schemas.contains(null) ? "(any)" : String.join(", ", schemas);
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.strip();
+    }
+}

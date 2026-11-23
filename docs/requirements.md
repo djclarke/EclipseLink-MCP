@@ -133,6 +133,9 @@ The work splits into **design time** and **run time**. At design time, the skill
   The layout, formats, packaging, hosting and MCP surface of these files are specified in [server-definition.md](server-definition.md).
 - FR-31: Stay inside the account. The schema scan runs as the shared database account (5.0) and only sees what that account can read.
 - FR-32: Re-entrant. The session can reopen existing files to add tables or reports later, rather than starting over.
+- FR-38: Deterministic generator. A command (`init`) reads JDBC metadata and writes a starter definition (descriptor, ORM XML with relationships from foreign keys, default JSON), which the skill then refines. The skill never writes mappings freehand.
+- FR-39: Precise table selection for large databases. Nothing is scanned by default. Tables are chosen by exact names, include and exclude patterns (glob or regex), schema and catalog, table types, and foreign key expansion from seed tables to a depth limit, with a cap on the table count. The selection is a reusable file as well as command line flags (server-definition 7.2).
+- FR-40: Scoped metadata reads. Metadata is read only for selected tables, and table lookups are pushed to the database where possible (server-definition 7.3).
 
 ### 4.9 Named queries and load graphs
 

@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch;
 import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
 import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
 import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
+import io.github.djclarke.eclipselink.mcp.generate.InitCommand;
 import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
 import io.github.djclarke.eclipselink.mcp.tools.ToolService;
 import io.modelcontextprotocol.json.McpJsonDefaults;
@@ -27,6 +28,7 @@ import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
  *
  * <pre>
  * java -jar eclipselink-mcp-server.jar --definition &lt;dir&gt; [--drivers &lt;dir&gt;] [--validate]
+ * java -jar eclipselink-mcp-server.jar init --url &lt;jdbc-url&gt; --out &lt;dir&gt; [selection options]
  * </pre>
  *
  * stdout carries MCP messages, so everything else (logs, errors) goes to stderr.
@@ -37,6 +39,13 @@ public final class Main {
     }
 
     public static void main(String[] args) {
+        if (args.length > 0 && args[0].equals("init")) {
+            int code = new InitCommand(System::getenv, System.out).run(java.util.Arrays.copyOfRange(args, 1, args.length));
+            if (code != 0) {
+                System.exit(code);
+            }
+            return;
+        }
         Path definitionDir = null;
         Path driversDir = null;
         boolean validate = false;
@@ -129,5 +138,6 @@ public final class Main {
         out.println("  --definition <dir>  server definition directory (contains eclipselink-mcp.yaml)");
         out.println("  --drivers <dir>     JDBC driver JARs to load (default: connection.drivers, or <definition>/drivers)");
         out.println("  --validate          load and check the definition against the database, then exit");
+        out.println("Generate a starter definition from selected tables: ... init --help");
     }
 }
