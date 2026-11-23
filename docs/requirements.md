@@ -8,11 +8,29 @@ Teams want AI agents to reach data in existing (often legacy) relational databas
 
 ## 2. Goal
 
-Provide an MCP server that:
+EclipseLink MCP is a **factory for MCP servers**, not one server. A single generic runtime is configured per deployment, and each configuration produces one MCP server instance:
+
+| Part of a deployment | Example |
+|---|---|
+| Database connection and account | JDBC URL, one shared read-only account (5.0) |
+| Model | introspected schema plus overrides, or an existing persistence unit (4.1) |
+| Named reports | `report_sales_by_region` (4.5) |
+| Tool settings | which tools are exposed, limits (4.3, FR-16) |
+
+One instance per database account also gives one instance per trust boundary: callers who need different access get a different instance.
+
+It is delivered in two forms:
+
+- **Standalone runtime (the POC).** An executable JAR (later a container image) that takes a JDBC connection and a config file and serves MCP, with no code to write.
+- **Embeddable library.** An application that already has JPA entities and a persistence unit adds a dependency and exposes its own model and named reports over MCP, reusing its existing mappings, pool and transport. This targets existing EclipseLink users.
+
+Both forms share the same core (model building, MOXy binding, tool generation); the standalone runtime is a thin launcher over the library.
+
+Each instance:
 
 1. Builds an object model from an existing schema with EclipseLink, without generating or compiling entity classes.
 2. Exposes that model to agents as MCP tools and resources, with JSON (and optionally XML) payloads and JSON Schema derived from the mappings via MOXy.
-3. Enforces role-based access to entities, rows, fields and operations for every request, in the persistence layer.
+3. Enforces role-based access to entities, rows, fields and operations for every request, in the persistence layer. *Deferred until after the initial POC; see 5.*
 
 ### Non-goals (first version)
 
@@ -20,6 +38,7 @@ Provide an MCP server that:
 - Schema changes (DDL) of any kind.
 - Writes (create/update/delete) in the first milestone; designed for but deferred.
 - A UI for authoring mappings.
+- The role-based security model (section 5 beyond 5.0) in the initial POC.
 
 ## 3. Users and scenarios
 
@@ -86,9 +105,22 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
 - Change notifications as MCP resource subscriptions.
 
-## 5. Security requirements
+### 4.7 Claude skills
+
+The repo ships its own Claude skills for working with the factory. They double as living documentation for the config format.
+
+- FR-24: Skills for the factory's main tasks:
+  - **Configure a server from a schema:** inspect a database, generate the model config, and refine it (names, hidden tables and columns, relationships, descriptions).
+  - **Author named reports:** turn a request such as "sales by region" into a report definition that passes startup validation (FR-22).
+  - **Embed in an app:** add the library to an existing JPA project and expose chosen entities and reports over MCP.
+  - **Validate and troubleshoot:** explain startup failures, mapping mismatches and invalid reports.
+- FR-25: Self-contained (decided 2026-11-23). The skills live in this repo and do not depend on the EclipseLink-JPA-skills repo. Shared material can be factored out later if that proves useful.
+- FR-26: Timing. Skills are written once the POC config format settles, so they do not churn with it.
+
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
+
+**Phasing (decided 2026-11-23):** a security model is required, but it comes after the initial POC. The POC relies on the starting assumption in 5.0 (database permissions on one shared account). Sections 5.1 to 5.6 are the target for the milestone after the POC and will be revisited then.
 
 ### 5.0 Starting assumption (milestone 1)
 
