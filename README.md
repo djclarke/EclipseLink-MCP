@@ -1,5 +1,10 @@
 # EclipseLink MCP
 
+<!-- Walkthrough video: replace VIDEO_URL (both places) with the https://github.com/user-attachments/assets/... link GitHub creates when you drag the MP4 into this file in the web editor. The bare link on its own line renders as a player; the image is a fallback for viewers that don't play video. -->
+VIDEO_URL
+
+[![Watch the 2:33 walkthrough: from an existing database to an MCP server, no code](docs/media/walkthrough-poster.jpg)](VIDEO_URL)
+
 A factory for [MCP](https://modelcontextprotocol.io) servers built on EclipseLink, letting AI agents work with an existing relational database through a mapped object model rather than raw SQL.
 
 Each deployment is a configuration: a database connection and account, a model (generated from the schema as dynamic entities, with no code), named reports and tool settings. The runtime turns that into an MCP server that exposes the model as JSON and XML through MOXy, with typed, relationship-aware tools such as list, describe, find and query.
