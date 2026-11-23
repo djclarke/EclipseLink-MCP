@@ -18,7 +18,7 @@ A role-based security model (row filters, field visibility and tools per caller)
 
 ## Status
 
-POC: a working, read-only MCP server over stdio. See:
+POC: a working MCP server over stdio, read-only by default, with opt-in named write operations that use optimistic locking. See:
 
 - [docs/requirements.md](docs/requirements.md) for goals, scope and functional/security requirements
 - [docs/server-definition.md](docs/server-definition.md) for the server definition: packaging, hosting and the full MCP surface (tools, resources, prompts)
@@ -32,7 +32,7 @@ Requires Java 21 and Maven.
 mvn package          # builds target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar and runs the tests
 ```
 
-The tests create the sample "existing" database, an H2 file at `target/test-db/sales` with customers, products, orders and order lines, plus a read-only `MCP_READER` account. To build or reset just that database, without running the tests:
+The tests create the sample "existing" database, an H2 file at `target/test-db/sales` with customers, products, orders and order lines, plus a read-only `MCP_READER` account and an `MCP_ORDER_DESK` account for the write sample (`samples/order-desk`). To build or reset just that database, without running the tests:
 
 ```sh
 mvn -Psample-db process-test-resources
@@ -118,7 +118,7 @@ The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an
 - tools `list_entities`, `describe_entity`, `find_entity`, `query_entities` (structured filters, select paths, sorting, paging, optional count), and `report_sales_by_region` and `report_open_orders_by_customer` (EclipseLink `ReportQuery`, parameters and paging only), and `query_order_details` (orders with their customer and lines, loaded and shaped by the query's `graph`);
 - related data loaded by IN batch reads, one statement per relationship level per page, and to-one references read from foreign keys with no lazy loads ([spec 4.8](docs/server-definition.md#48-loading-related-data-and-json-shapes));
 - resources `eclipselink://model`, `eclipselink://entity/{name}`, `eclipselink://report/{name}` and `eclipselink://query/{name}`;
-- generated server instructions, read-only tool annotations, agent-facing error codes and an audit log line per call (stderr).
+- generated server instructions, read-only and destructive tool annotations, agent-facing error codes and an audit log line per call (stderr).
 
 ### Not in the POC yet
 

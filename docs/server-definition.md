@@ -744,7 +744,7 @@ To show the user what agents will see after each step (FR-28), `call` runs one t
 java -jar eclipselink-mcp-server.jar call --definition <dir> query_order_details '{"region":"EAST","pageSize":2}'
 ```
 
-For a write tool, `call` is a **dry run** by default: it runs the operation in a transaction, flushes it so the database checks constraints and versions, prints the result with `"dryRun": true`, and rolls back. `--commit` applies it. The design-time skill only ever uses the dry run.
+For a write tool, `call` is a **dry run** by default: it runs the operation in a transaction, flushes it so the database checks constraints and versions, prints the result with `"dryRun": true`, and rolls back. `--commit` applies it, and needs `tools.writes: true`. A dry run works before that switch is on, so the skill can preview an operation before the user enables writes. The design-time skill only ever uses the dry run.
 
 The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 

@@ -21,6 +21,7 @@
                 <column name="CREDIT_LIMIT" precision="20" scale="4"/>
                 <property name="mcp.description" value="Credit limit in USD"/>
             </basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
             <one-to-many name="orders" target-entity="sales.Order" mapped-by="customer" attribute-type="java.util.List"/>
         </attributes>
     </entity>
@@ -34,6 +35,7 @@
             <basic name="category" attribute-type="String"><column name="CATEGORY"/></basic>
             <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
             <basic name="weightKg" attribute-type="Double"><column name="WEIGHT_KG"/></basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
         </attributes>
     </entity>
 
@@ -59,6 +61,7 @@
                 <column name="SHIPPED_AT"/>
                 <property name="mcp.description" value="When the order shipped, with its time zone offset"/>
             </basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
             <many-to-one name="customer" target-entity="sales.Customer" fetch="LAZY">
                 <join-column name="CUSTOMER_ID"/>
             </many-to-one>
@@ -69,8 +72,10 @@
     <entity class="OrderLine" access="VIRTUAL">
         <table name="ORDER_LINE"/>
         <property name="mcp.description" value="One product line on an order"/>
+        <!-- ORDER_LINE has no version column: writes to a line check and increment its order's version. -->
+        <property name="mcp.lock-through" value="order"/>
         <attributes>
-            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="quantity" attribute-type="Integer"><column name="QUANTITY"/></basic>
             <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
             <many-to-one name="order" target-entity="sales.Order" fetch="LAZY">

@@ -7,7 +7,8 @@ Two server definitions over the same sample H2 database, a before and after of t
 | Folder | What it is |
 |---|---|
 | [sales-db-generated](sales-db-generated) | The raw `init` output for every table, untouched. What you get first. |
-| [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. |
+| [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. Read-only. |
+| [order-desk](order-desk) | The same model with write operations switched on (`tools.writes: true`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
 
 ## sales-db-generated
 
@@ -38,9 +39,32 @@ validated edits produce from the generated one:
 java -jar $JAR edit --definition <dir> rename-entity Orders Order
 java -jar $JAR edit --definition <dir> rename-attribute Order orderLines lines
 java -jar $JAR edit --definition <dir> remove-attribute Product orderLines
+java -jar $JAR edit --definition <dir> lock-through OrderLine order
 java -jar $JAR edit --definition <dir> describe Customer "A customer account"
 # ... and a describe for each other entity and attribute that carries a description
 ```
 
 The descriptor was then given a title, agent instructions and limits; two reports and one query were
 added under `reports/` and `queries/`. The tests run against this definition.
+
+## order-desk
+
+A second server over the same database, for a different trust boundary: it can ship and cancel orders,
+correct a customer's email, reprice a product, and add, change or remove lines on open orders. Each is one file
+in `writes/` (spec 2.7). Every write uses optimistic locking (spec 4.9): `Customer`, `Order` and `Product`
+carry a `version`, and `OrderLine` is locked through its order, so any change to a line checks and increments
+the order's version.
+
+It connects as `MCP_ORDER_DESK` (password `orderdesk` in the sample), which may read every table and change
+only `CUSTOMER`, `PRODUCT`, `ORDERS` (update) and `ORDER_LINE` (insert, update, delete). Its model is a copy of
+`sales-db`'s, which a test keeps identical.
+
+```sh
+export SALES_DB_URL='jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' ORDER_DESK_DB_PASSWORD=orderdesk
+java -jar $JAR call --definition samples/order-desk ship_order \
+  '{"id":1002,"version":1,"shippedAt":"2026-11-23T10:30:00-05:00"}'           # dry run: rolled back
+java -jar $JAR call --definition samples/order-desk --commit ship_order '...'  # really writes
+```
+
+The sample does not recalculate an order's `total` when its lines change; a real schema would do that in the
+database or in a dedicated operation.

@@ -1,0 +1,7 @@
+name: reprice_product
+title: Reprice a product
+description: Change the list price of a product. Existing order lines keep their price.
+action: update
+root: Product
+set:
+  price: { required: true }

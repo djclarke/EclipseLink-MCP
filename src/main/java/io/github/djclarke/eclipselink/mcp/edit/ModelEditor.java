@@ -241,6 +241,126 @@ public final class ModelEditor {
         changes.add("Described " + target + ": " + text.strip());
     }
 
+    /** Makes an integer basic attribute the entity's optimistic lock version (spec 4.9). */
+    public void setVersion(String entity, String attribute) {
+        Element e = entity(entity);
+        Element a = attribute(e, attribute);
+        Element existing = attributesOf(e).stream().filter(x -> x.getLocalName().equals("version")).findFirst()
+                .orElse(null);
+        if (existing != null) {
+            throw new DefinitionException(entity + " already has version " + existing.getAttribute("name")
+                    + "; unset-version first");
+        }
+        if (!a.getLocalName().equals("basic")) {
+            throw new DefinitionException(entity + "." + attribute + " is not a basic attribute");
+        }
+        String type = a.getAttribute("attribute-type").replace("java.lang.", "");
+        if (!List.of("Integer", "Long", "int", "long").contains(type)) {
+            throw new DefinitionException(entity + "." + attribute + " is " + (type.isEmpty() ? "untyped" : type)
+                    + "; a version must be an integer attribute");
+        }
+        if (findProperty(e, LOCK_THROUGH) != null) {
+            throw new DefinitionException(entity + " is locked through a relationship; remove that first with "
+                    + "lock-through " + entity + " \"\"");
+        }
+        Element version = renamed(a, "version");
+        remove(a);
+        // ORM XML order: id, basic, version, then relationships.
+        Element attrs = first(e, "attributes");
+        Element before = null;
+        for (Element x : attributesOf(e)) {
+            if (!x.getLocalName().equals("id") && !x.getLocalName().equals("embedded-id")
+                    && !x.getLocalName().equals("basic")) {
+                before = x;
+                break;
+            }
+        }
+        if (before != null) {
+            insertBefore(version, before);
+        } else {
+            Node last = attrs.getLastChild();
+            String indent = indentOf(attributesOf(e).isEmpty() ? attrs : attributesOf(e).get(0));
+            attrs.insertBefore(doc.createTextNode("\n" + indent), last);
+            attrs.insertBefore(version, last);
+        }
+        changes.add("Made " + entity + "." + attribute + " the optimistic lock version");
+    }
+
+    /** Turns the entity's version attribute back into a basic attribute. */
+    public void unsetVersion(String entity) {
+        Element e = entity(entity);
+        Element v = attributesOf(e).stream().filter(x -> x.getLocalName().equals("version")).findFirst()
+                .orElseThrow(() -> new DefinitionException(entity + " has no version attribute"));
+        Element basic = renamed(v, "basic");
+        v.getParentNode().replaceChild(basic, v);
+        changes.add("Made " + entity + "." + basic.getAttribute("name") + " a basic attribute (no version)");
+    }
+
+    /**
+     * Locks the entity through an owning to-one relationship whose target has a version (spec 4.9); an empty
+     * relationship removes it.
+     */
+    public void lockThrough(String entity, String relationship) {
+        Element e = entity(entity);
+        Element property = findProperty(e, LOCK_THROUGH);
+        if (relationship == null || relationship.isBlank()) {
+            if (property != null) {
+                remove(property);
+            }
+            changes.add(entity + " is no longer locked through a relationship");
+            return;
+        }
+        Element a = attribute(e, relationship);
+        if (!a.getLocalName().equals("many-to-one") && !a.getLocalName().equals("one-to-one")
+                || a.hasAttribute("mapped-by")) {
+            throw new DefinitionException(entity + "." + relationship + " is not an owning to-one relationship");
+        }
+        if (attributesOf(e).stream().anyMatch(x -> x.getLocalName().equals("version"))) {
+            throw new DefinitionException(entity + " has its own version; unset-version first");
+        }
+        Element target = entity(simple(a.getAttribute("target-entity")));
+        if (attributesOf(target).stream().noneMatch(x -> x.getLocalName().equals("version"))) {
+            throw new DefinitionException(simple(target.getAttribute("class")) + " has no version attribute; "
+                    + "set-version on it first");
+        }
+        if (property == null) {
+            property = doc.createElementNS(e.getNamespaceURI(), "property");
+            property.setAttribute("name", LOCK_THROUGH);
+            insertBefore(property, first(e, "attributes"));
+        }
+        property.setAttribute("value", relationship);
+        changes.add(entity + " is locked through " + relationship + " (writes check and increment "
+                + simple(target.getAttribute("class")) + "'s version)");
+    }
+
+    private static final String LOCK_THROUGH = "mcp.lock-through";
+
+    private Element findProperty(Element owner, String name) {
+        for (Element p : children(owner, "property")) {
+            if (name.equals(p.getAttribute("name"))) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    /** A copy of {@code e} with another element name, same attributes and children. */
+    private Element renamed(Element e, String localName) {
+        Element copy = doc.createElementNS(e.getNamespaceURI(), localName);
+        if (e.getPrefix() != null) {
+            copy.setPrefix(e.getPrefix());
+        }
+        var attrs = e.getAttributes();
+        for (int i = 0; i < attrs.getLength(); i++) {
+            Node at = attrs.item(i);
+            copy.setAttributeNS(at.getNamespaceURI(), at.getNodeName(), at.getNodeValue());
+        }
+        while (e.getFirstChild() != null) {
+            copy.appendChild(e.getFirstChild());
+        }
+        return copy;
+    }
+
     /** Entity names (class names without the package), in file order. */
     public List<String> entityNames() {
         return entities().stream().map(x -> simple(x.getAttribute("class"))).toList();

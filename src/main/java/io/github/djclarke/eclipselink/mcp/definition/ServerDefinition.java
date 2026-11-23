@@ -13,10 +13,16 @@ import java.nio.file.Path;
 import java.util.List;
 
 public record ServerDefinition(Path directory, Descriptor descriptor, List<ReportDefinition> reports,
-                               List<QueryDefinition> queries) {
+                               List<QueryDefinition> queries, List<WriteDefinition> writes) {
 
     public ServerDefinition {
         queries = queries == null ? List.of() : queries;
+        writes = writes == null ? List.of() : writes;
+    }
+
+    public ServerDefinition(Path directory, Descriptor descriptor, List<ReportDefinition> reports,
+                            List<QueryDefinition> queries) {
+        this(directory, descriptor, reports, queries, List.of());
     }
 
     public Path mappingsFile() {

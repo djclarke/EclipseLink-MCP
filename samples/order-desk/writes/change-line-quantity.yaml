@@ -1,0 +1,8 @@
+name: change_line_quantity
+title: Change a line's quantity
+description: Change the quantity on a line of an open order.
+action: update
+root: OrderLine
+set:
+  quantity: { required: true }
+condition: { path: order.status, op: eq, value: OPEN }

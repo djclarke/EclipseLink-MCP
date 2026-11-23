@@ -1,0 +1,30 @@
+apiVersion: eclipselink-mcp/v1
+server:
+  name: order-desk
+  title: Order desk (sample with writes)
+  version: 0.1.0
+  instructions: |
+    Sample order desk. Amounts are in USD. Ship or cancel open orders, correct customer emails, reprice
+    products, and add, change or remove lines on open orders. Confirm each change with the user first.
+
+connection:
+  # The same database as samples/sales-db, through an account allowed to make only these changes.
+  url: ${env:SALES_DB_URL}
+  user: ${env:ORDER_DESK_DB_USER:-MCP_ORDER_DESK}
+  password: ${env:ORDER_DESK_DB_PASSWORD}
+  pool:
+    min: 1
+    max: 4
+
+model:
+  mappings: model/eclipselink-orm.xml
+
+tools:
+  writes: true                      # off by default; exposes the operations in writes/
+
+limits:
+  defaultPageSize: 50
+  maxPageSize: 500
+
+transport:
+  type: stdio

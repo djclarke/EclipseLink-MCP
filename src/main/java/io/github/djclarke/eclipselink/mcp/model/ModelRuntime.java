@@ -101,6 +101,11 @@ public final class ModelRuntime implements AutoCloseable {
         props.put(PersistenceUnitProperties.CONNECTION_POOL_INITIAL, String.valueOf(d.connection().pool().min()));
         props.put(PersistenceUnitProperties.CONNECTION_POOL_MAX, String.valueOf(d.connection().pool().max()));
         props.put(PersistenceUnitProperties.WEAVING, "false");
+        if (d.connection().url().startsWith("jdbc:h2:")) {
+            // EclipseLink 5.0's H2Platform reads identity values with CALL IDENTITY(), which H2 2.x removed.
+            // Reading them through JDBC getGeneratedKeys works with both, so generated keys work on create.
+            props.put(PersistenceUnitProperties.TARGET_DATABASE_PROPERTIES, "supportsReturnGeneratedKeys=true");
+        }
         props.put(PersistenceUnitProperties.DDL_GENERATION, PersistenceUnitProperties.NONE);
         // Read-only server over a database that other applications change: do not serve stale rows from cache.
         props.put(PersistenceUnitProperties.CACHE_SHARED_DEFAULT, "false");

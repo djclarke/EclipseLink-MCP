@@ -1,0 +1,11 @@
+name: add_order_line
+title: Add an order line
+description: Add a product line to an open order.
+action: create
+root: OrderLine                     # locked through its order: pass orderVersion
+set:
+  order: { required: true }
+  product: { required: true }
+  quantity: { required: true, description: "Units, 1 or more" }
+  price: { required: true, description: "Unit price in USD" }
+condition: { path: order.status, op: eq, value: OPEN }

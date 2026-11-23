@@ -1,11 +1,11 @@
 ---
 name: configure-server-from-schema
-description: Build an EclipseLink MCP server definition from an existing database with the user. Choose tables precisely, generate with init, simplify the model with validated edits, then add named queries and named reports, checking the agent-facing JSON after every step.
+description: Build an EclipseLink MCP server definition from an existing database with the user. Choose tables precisely, generate with init, simplify the model with validated edits, add named queries and named reports, and, only when the user asks, enable specific write scenarios with optimistic locking, checking the agent-facing JSON after every step.
 ---
 
 # Configure an EclipseLink MCP server from a schema
 
-You help a data owner turn some tables of an existing database into a read-only MCP server definition: a folder of reviewable files that the EclipseLink MCP runtime serves. You work with the user in small steps and show the JSON an agent would get after each change.
+You help a data owner turn some tables of an existing database into an MCP server definition, read-only unless they ask for specific writes: a folder of reviewable files that the EclipseLink MCP runtime serves. You work with the user in small steps and show the JSON an agent would get after each change.
 
 The file formats are specified in `docs/server-definition.md` in this repository. Section 2 covers the descriptor, reports and queries. Section 7 covers `init`, selections and edits.
 
@@ -16,7 +16,8 @@ The file formats are specified in `docs/server-definition.md` in this repository
 - **Never handle the password.** Do not ask for it in chat, and never put it in a file or a command line. The user exports it in their own shell, and you pass only the variable's name with `--password-env`.
 - **Never select a whole database** unless the user asks for every table, and the database is small. Select precisely (step 2).
 - **One change at a time:** run it, show the result, and agree the next change.
-- Everything is read-only. The server never writes to the database.
+- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then add one named write operation per scenario (step 7), never a general "edit anything" operation.
+- **Never commit a write while designing.** `call` runs write tools as a dry run (rolled back). Do not pass `--commit`.
 
 Commands, with `$JAR` the runtime JAR (`target/eclipselink-mcp-server-*.jar` after `mvn package`):
 
@@ -141,9 +142,68 @@ java -jar $JAR call --definition defs/sales query_order_details '{"region":"EAST
 
 If validation fails, the message names the file and the problem: an unknown path, a param that is declared but unused, or a missing `as`. Fix the YAML and validate again.
 
-## 7. Finish
+## 7. Write scenarios (only when the user asks)
 
-- Run `--validate` once more, and list the tools the server will expose.
+A server stays read-only unless its descriptor sets `tools.writes: true`. When the user wants agents to change data, work out the **specific scenarios** first ("ship an open order", "add a line to an open order", "correct a customer's email"). Each becomes one file in `writes/` (spec 2.7), and agents can do exactly those changes and nothing else.
+
+**a. Locking comes first.** Every write is checked with optimistic locking (spec 4.9), and the server keeps no state between calls: the version goes out in every JSON item, comes back in the write call, and the write returns the new one. Before writing any operation, check how each entity it changes is locked, with `describe_entity` (its `lock`):
+
+| Situation | What to do |
+|---|---|
+| `init` found a version column (`VERSION`, `ROW_VERSION`, `OPT_LOCK`, ...) | Nothing: it is already a `<version>` mapping |
+| The table has an integer version column under another name | `edit set-version Customer revNo` (or `versions:` in the selection before `init`) |
+| A child table without a version, whose parent has one (order lines and their order) | `edit lock-through OrderLine order`. Every write on a line then checks and increments the order's version, so changes to an order and its lines never overwrite each other |
+| No version and no parent to lock through | Ask the DBA to add an integer version column that every application increments. Only if the user accepts that the last write wins, write the operation with `locking: none`, and say so plainly |
+
+**b. Write the operation.** Name it for the scenario. Keep `set` to what the agent must decide, put constant values in `fixed`, and add a `condition` for the state the row must be in. Use `allowed` to restrict a value to a list.
+
+```yaml
+# writes/ship-order.yaml
+name: ship_order
+title: Ship an order
+description: "Mark an open order shipped, with the time it shipped."
+action: update                    # create | update | delete
+root: Order
+set:
+  shippedAt: { required: true, description: "When it shipped, ISO-8601 with its offset" }
+fixed:
+  status: SHIPPED
+condition: { path: status, op: eq, value: OPEN }
+```
+
+```yaml
+# writes/add-order-line.yaml  (OrderLine is locked through order: the tool asks for orderVersion)
+name: add_order_line
+action: create
+root: OrderLine
+set:
+  order: { required: true }       # a to-one relationship takes the target's key
+  product: { required: true }
+  quantity: { required: true }
+  price: { required: true }
+condition: { path: order.status, op: eq, value: OPEN }
+```
+
+Keys, versions and to-many relationships cannot be set. A created entity's key is caller input unless the database generates it (`init` maps identity columns). Values use the same fixed type contract as reads.
+
+**c. Preview it as a dry run.** Validate, then show the user what an agent sends and gets back. Read the row first, so they see the version travel:
+
+```sh
+java -jar $JAR --definition defs/sales --validate
+java -jar $JAR call --definition defs/sales find_entity '{"entity":"Order","id":1002}'
+java -jar $JAR call --definition defs/sales ship_order '{"id":1002,"version":1,"shippedAt":"2026-11-23T10:30:00-05:00"}'
+```
+
+The result has `"dryRun": true` and nothing is written. Also show a stale version (`"version": 0`) so the user sees the `CONFLICT` an agent gets, and a row that fails the condition (`PRECONDITION_FAILED`). A `PERMISSION_DENIED` means the account lacks a grant.
+
+**d. Switch writes on.** Only when the user confirms, set `tools.writes: true` in the descriptor. Then tell them:
+
+- The server needs a database account with exactly the grants these operations need (for example `UPDATE` on ORDERS, `INSERT, UPDATE, DELETE` on ORDER_LINE), not the read-only one. Often this is a separate server definition with its own account, so read-only agents keep a read-only server.
+- MCP clients ask the user before running tools marked destructive (updates and deletes).
+
+## 8. Finish
+
+- Run `--validate` once more, and list the tools the server will expose. Say whether it is read-only, and if not, list the write tools and the account they need.
 - Suggest the user commit the definition folder to git. It contains no secrets.
 - Give the client configuration for Claude Desktop or Claude Code (spec 3.4) with the definition path, and the environment variable names from the descriptor. Remind the user the password goes in their environment, not in the file.
 - Note any `init` warnings that were left unresolved, such as skipped columns or keyless views.

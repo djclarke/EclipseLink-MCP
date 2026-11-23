@@ -43,14 +43,13 @@ public final class McpServerFactory {
         Descriptor.Server info = model.definition().descriptor().server();
 
         List<McpServerFeatures.SyncToolSpecification> toolSpecs = new ArrayList<>();
-        McpSchema.ToolAnnotations readOnly = new McpSchema.ToolAnnotations(null, true, false, true, false, null);
         for (ToolService.Tool t : tools.tools()) {
             McpSchema.Tool tool = McpSchema.Tool.builder()
                     .name(t.name())
                     .title(t.title())
                     .description(t.description())
                     .inputSchema(t.inputSchema())
-                    .annotations(readOnly)
+                    .annotations(annotations(t.kind()))
                     .build();
             toolSpecs.add(McpServerFeatures.SyncToolSpecification.builder()
                     .tool(tool)
@@ -104,6 +103,16 @@ public final class McpServerFactory {
                 .build();
     }
 
+    /** MCP tool hints (spec 4.2): read tools are read-only; updates and deletes are destructive. */
+    static McpSchema.ToolAnnotations annotations(ToolService.Kind kind) {
+        // (title, readOnlyHint, destructiveHint, idempotentHint, openWorldHint, returnDirect)
+        return switch (kind) {
+            case READ -> new McpSchema.ToolAnnotations(null, true, false, true, false, null);
+            case CREATE -> new McpSchema.ToolAnnotations(null, false, false, false, false, null);
+            case UPDATE, DELETE -> new McpSchema.ToolAnnotations(null, false, true, false, false, null);
+        };
+    }
+
     static McpSchema.CallToolResult call(ToolService tools, McpSchema.CallToolRequest request) {
         try {
             Map<String, Object> result = tools.call(request.name(), request.arguments());
@@ -112,7 +121,7 @@ public final class McpServerFactory {
                     .structuredContent(result)
                     .build();
         } catch (ToolException e) {
-            Map<String, Object> error = Map.of("error", Map.of("code", e.code().name(), "message", e.getMessage()));
+            Map<String, Object> error = e.toError();
             return McpSchema.CallToolResult.builder()
                     .addTextContent(e.code() + ": " + e.getMessage())
                     .structuredContent(error)
@@ -128,7 +137,10 @@ public final class McpServerFactory {
         if (info.instructions() != null) {
             sb.append(info.instructions().strip()).append("\n\n");
         }
-        sb.append("This is a read-only server over a relational database, exposed as entities.\n");
+        List<String> writes = tools.exposedWrites().stream().map(w -> w.definition().toolName()).toList();
+        sb.append(writes.isEmpty() ? "This is a read-only server over a relational database, exposed as entities.\n"
+                : "This server reads a relational database, exposed as entities, and can make the specific changes "
+                + "its write tools allow.\n");
         sb.append("Entities: ");
         List<String> names = new ArrayList<>();
         for (ClassDescriptor d : model.entities().values()) {
@@ -145,6 +157,12 @@ public final class McpServerFactory {
         if (!queries.isEmpty()) {
             sb.append("Named query tools: ").append(String.join(", ", queries))
                     .append(". Prefer these when one fits: they return related data in one call.\n");
+        }
+        if (!writes.isEmpty()) {
+            sb.append("Write tools: ").append(String.join(", ", writes)).append(". They change data, one entity per "
+                    + "call. Items you read include a version; send back the version you read. On CONFLICT the data "
+                    + "changed since you read it: read it again and retry only if the change still makes sense. Each "
+                    + "write returns the new version, so you can make a follow-up change without reading again.\n");
         }
         sb.append("Use list_entities and describe_entity to learn the model, query_entities with a structured "
                 + "filter to find rows, and page with nextCursor. Results only include what the server's database "

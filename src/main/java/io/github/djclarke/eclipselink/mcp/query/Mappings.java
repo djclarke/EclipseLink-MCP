@@ -21,6 +21,9 @@ import java.util.List;
 import java.util.Map;
 
 import org.eclipse.persistence.descriptors.ClassDescriptor;
+import org.eclipse.persistence.descriptors.VersionLockingPolicy;
+import org.eclipse.persistence.expressions.Expression;
+import org.eclipse.persistence.expressions.ExpressionBuilder;
 import org.eclipse.persistence.internal.helper.ConversionManager;
 import org.eclipse.persistence.mappings.DatabaseMapping;
 import org.eclipse.persistence.mappings.DirectToFieldMapping;
@@ -61,6 +64,55 @@ public final class Mappings {
             keys.add(m.getAttributeName());
         }
         return keys;
+    }
+
+    /**
+     * The attribute holding the entity's optimistic lock version (an ORM {@code <version>} mapping), or null.
+     */
+    public static String versionAttribute(ClassDescriptor descriptor) {
+        if (descriptor.getOptimisticLockingPolicy() instanceof VersionLockingPolicy v && v.getWriteLockField() != null) {
+            DatabaseMapping m = descriptor.getObjectBuilder().getMappingForField(v.getWriteLockField());
+            return m == null ? null : m.getAttributeName();
+        }
+        return null;
+    }
+
+    /** {@code key = id}: a scalar for a single key, or an object of key attributes. */
+    public static Expression keyExpression(ClassDescriptor d, ExpressionBuilder eb, Object id) {
+        List<String> keys = keyAttributes(d);
+        Expression where = null;
+        if (id instanceof Map<?, ?> composite) {
+            for (String k : keys) {
+                if (!composite.containsKey(k)) {
+                    throw new ToolException(ToolException.Code.INVALID_PARAMETER,
+                            "'id' must contain key attribute '" + k + "'");
+                }
+                Expression e = eb.get(k).equal(convert(composite.get(k),
+                        attributeType(d.getMappingForAttributeName(k)), k));
+                where = where == null ? e : where.and(e);
+            }
+        } else {
+            if (keys.size() != 1) {
+                throw new ToolException(ToolException.Code.INVALID_PARAMETER,
+                        d.getAlias() + " has a composite key " + keys + "; pass 'id' as an object");
+            }
+            String k = keys.get(0);
+            where = eb.get(k).equal(convert(id, attributeType(d.getMappingForAttributeName(k)), k));
+        }
+        return where;
+    }
+
+    /** The entity's key as JSON: the single value, or an object of key attributes. */
+    public static Object keyValue(ClassDescriptor d, org.eclipse.persistence.dynamic.DynamicEntity entity) {
+        List<String> keys = keyAttributes(d);
+        if (keys.size() == 1) {
+            return io.github.djclarke.eclipselink.mcp.json.EntityJson.value(entity.get(keys.get(0)));
+        }
+        Map<String, Object> id = new LinkedHashMap<>();
+        for (String k : keys) {
+            id.put(k, io.github.djclarke.eclipselink.mcp.json.EntityJson.value(entity.get(k)));
+        }
+        return id;
     }
 
     public static boolean isKey(ClassDescriptor descriptor, DatabaseMapping m) {

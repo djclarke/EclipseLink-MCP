@@ -166,6 +166,27 @@ class GeneratorTest {
         }
     }
 
+    @Test
+    void versionColumnsNamedInTheSelection() throws Exception {
+        Path sel = dir.resolve("versions.yaml");
+        Files.writeString(sel, """
+                tables: [A_PARENT, A_CHILD]
+                versions: { A_CHILD: V }
+                """);
+        Path out = dir.resolve("versions");
+        assertEquals(0, init("--url", MEM, "--user", "sa", "--out", out.toString(), "--selection", sel.toString()));
+        String orm = Files.readString(out.resolve("model/eclipselink-orm.xml"));
+        assertTrue(orm.contains("<version name=\"v\" attribute-type=\"Integer\"><column name=\"V\"/></version>"), orm);
+        assertTrue(Files.readString(out.resolve("README.md")).contains("Optimistic lock versions: AChild.v"));
+
+        Files.writeString(sel, "tables: [A_PARENT, A_CHILD]\nversions: { A_CHILD: NAME_MISSING }\n");
+        assertEquals(1, init("--url", MEM, "--user", "sa", "--out", dir.resolve("bad").toString(),
+                "--selection", sel.toString()));
+        Files.writeString(sel, "tables: [A_PARENT, A_CHILD]\nversions: { A_CHILD: PARENT_ID }\n");
+        assertEquals(1, init("--url", MEM, "--user", "sa", "--out", dir.resolve("bad2").toString(),
+                "--selection", sel.toString()), "a foreign key column cannot be the version");
+    }
+
     // ---- round trip over the sample database ----------------------------------------------------------------
 
     @Test

@@ -15,6 +15,7 @@
             <basic name="region" attribute-type="String"><column name="REGION"/></basic>
             <basic name="email" attribute-type="String"><column name="EMAIL"/></basic>
             <basic name="creditLimit" attribute-type="java.math.BigDecimal"><column name="CREDIT_LIMIT" precision="20" scale="4"/></basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
             <one-to-many name="orders" target-entity="sales.Orders" mapped-by="customer" attribute-type="java.util.List"/>
         </attributes>
     </entity>
@@ -28,6 +29,7 @@
             <basic name="total" attribute-type="java.math.BigDecimal"><column name="TOTAL" precision="12" scale="2"/></basic>
             <basic name="createdAt" attribute-type="java.time.LocalDateTime"><column name="CREATED_AT"/></basic>
             <basic name="shippedAt" attribute-type="java.time.OffsetDateTime"><column name="SHIPPED_AT"/></basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
             <many-to-one name="customer" target-entity="sales.Customer" fetch="LAZY">
                 <join-column name="CUSTOMER_ID" referenced-column-name="ID"/>
             </many-to-one>
@@ -38,7 +40,7 @@
     <entity class="OrderLine" access="VIRTUAL">
         <table name="ORDER_LINE"/>
         <attributes>
-            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="quantity" attribute-type="Integer"><column name="QUANTITY"/></basic>
             <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
             <many-to-one name="order" target-entity="sales.Orders" fetch="LAZY">
@@ -58,6 +60,7 @@
             <basic name="category" attribute-type="String"><column name="CATEGORY"/></basic>
             <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
             <basic name="weightKg" attribute-type="Double"><column name="WEIGHT_KG"/></basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
             <one-to-many name="orderLines" target-entity="sales.OrderLine" mapped-by="product" attribute-type="java.util.List"/>
         </attributes>
     </entity>

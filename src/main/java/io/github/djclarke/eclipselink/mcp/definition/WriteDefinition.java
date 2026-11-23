@@ -1,0 +1,58 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.definition;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * A named write operation from {@code writes/*.yaml} (docs/server-definition.md 2.7): one create, update or
+ * delete of one root entity, with the attributes the caller may set, values the server sets, and a condition
+ * the row must meet. Exposed as a tool only when the descriptor sets {@code tools.writes: true}.
+ *
+ * @param set attributes the caller supplies
+ * @param fixed values the server sets on every call, in the type contract's formats
+ * @param condition filter in the shared grammar, values only; checked in the same transaction
+ * @param locking null to require the entity's lock (spec 4.9), or "none"
+ */
+public record WriteDefinition(
+        String name,
+        String title,
+        String description,
+        String action,
+        String root,
+        LinkedHashMap<String, Field> set,
+        LinkedHashMap<String, Object> fixed,
+        Map<String, Object> condition,
+        String locking) {
+
+    public static final Set<String> ACTIONS = Set.of("create", "update", "delete");
+
+    public WriteDefinition {
+        set = set == null ? new LinkedHashMap<>() : set;
+        fixed = fixed == null ? new LinkedHashMap<>() : fixed;
+    }
+
+    /** Tool name for this operation: its name, as written. */
+    public String toolName() {
+        return name;
+    }
+
+    /**
+     * @param allowed permitted values, in the type contract's formats; null for any
+     */
+    public record Field(Boolean required, List<Object> allowed, String description) {
+        public Field {
+            required = required != null && required;
+        }
+    }
+}

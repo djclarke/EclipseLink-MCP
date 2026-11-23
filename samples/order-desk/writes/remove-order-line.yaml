@@ -1,0 +1,6 @@
+name: remove_order_line
+title: Remove an order line
+description: Remove a line from an open order.
+action: delete
+root: OrderLine
+condition: { path: order.status, op: eq, value: OPEN }

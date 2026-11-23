@@ -51,6 +51,7 @@ public final class DefinitionGenerator {
     private final TableSelection selection;
     private final Options options;
     private final List<String> warnings = new ArrayList<>();
+    private final List<String> versionNotes = new ArrayList<>();
 
     public DefinitionGenerator(SchemaModel schema, TableSelection selection, Options options) {
         this.schema = schema;
@@ -167,6 +168,8 @@ public final class DefinitionGenerator {
             Set<String> skip = fkColumnsUsed.getOrDefault(t.qualifiedName(), Set.of());
             List<Attr> ids = new ArrayList<>();
             List<Attr> basics = new ArrayList<>();
+            List<Attr> versions = new ArrayList<>();
+            String versionColumn = versionColumn(t, skip);
             // Relationship names were reserved first; basic attributes take what is left.
             Set<String> taken = new HashSet<>(p.names());
             for (SchemaModel.Column c : t.columns()) {
@@ -183,23 +186,31 @@ public final class DefinitionGenerator {
                     continue;
                 }
                 boolean key = t.primaryKey().contains(c.name());
+                boolean version = c.name().equals(versionColumn);
+                String element = key ? "id" : version ? "version" : "basic";
                 String name = unique(lowerCamel(c.name()), taken, "Value");
-                StringBuilder xml = new StringBuilder("            <").append(key ? "id" : "basic")
+                StringBuilder xml = new StringBuilder("            <").append(element)
                         .append(" name=\"").append(name).append("\" attribute-type=\"").append(type).append("\">");
                 xml.append("<column name=\"").append(esc(c.name())).append('"');
                 if (type.equals("java.math.BigDecimal") && c.size() > 0) {
                     xml.append(" precision=\"").append(c.size()).append("\" scale=\"").append(c.scale()).append('"');
                 }
                 xml.append("/>");
+                if (key && c.autoIncrement() && t.primaryKey().size() == 1) {
+                    xml.append("<generated-value strategy=\"IDENTITY\"/>");
+                }
                 if (c.remarks() != null) {
                     xml.append("\n                <property name=\"mcp.description\" value=\"").append(esc(c.remarks()))
                             .append("\"/>\n            ");
                 }
-                xml.append("</").append(key ? "id" : "basic").append(">\n");
-                (key ? ids : basics).add(new Attr(name, xml.toString()));
+                xml.append("</").append(element).append(">\n");
+                (key ? ids : version ? versions : basics).add(new Attr(name, xml.toString()));
             }
             ids.forEach(a -> orm.append(a.xml()));
             basics.forEach(a -> orm.append(a.xml()));
+            versions.forEach(a -> orm.append(a.xml()));
+            versions.forEach(a -> versionNotes.add(p.entity() + "." + a.name() + " (" + t.qualifiedName() + "."
+                    + versionColumn + ")"));
             relationAttrs.getOrDefault(t.qualifiedName(), List.of()).forEach(a -> orm.append(a.xml()));
             for (String[] inv : inverse) {
                 if (!inv[0].equals(t.qualifiedName())) {
@@ -220,6 +231,45 @@ public final class DefinitionGenerator {
             throw new DefinitionException("None of the selected tables has a primary key; give keys in the selection");
         }
         return new Mapping(orm.toString(), entityTables, relationships);
+    }
+
+    /** Column names recognized as an optimistic lock version (spec 7.4), compared case-insensitively. */
+    static final List<String> VERSION_NAMES = List.of("VERSION", "ROW_VERSION", "OPT_LOCK", "OPTLOCK",
+            "LOCK_VERSION", "OBJ_VERSION");
+
+    /**
+     * The table's optimistic lock version column: the one named in the selection's {@code versions}, or a
+     * recognized name on an integer column outside the key and foreign keys. Null for none.
+     */
+    private String versionColumn(SchemaModel.Table t, Set<String> relationshipColumns) {
+        String named = selection.versionFor(t.schema(), t.name());
+        if ("none".equalsIgnoreCase(named)) {
+            return null;
+        }
+        Set<String> fkColumns = new HashSet<>(relationshipColumns);
+        t.foreignKeys().forEach(fk -> fkColumns.addAll(fk.columns()));
+        if (named != null) {
+            SchemaModel.Column c = t.columns().stream().filter(x -> x.name().equalsIgnoreCase(named)).findFirst()
+                    .orElseThrow(() -> new DefinitionException("versions: " + t.qualifiedName() + " has no column "
+                            + named));
+            if (!isInteger(c) || t.primaryKey().contains(c.name()) || fkColumns.contains(c.name())) {
+                throw new DefinitionException("versions: " + t.qualifiedName() + "." + c.name()
+                        + " must be an integer column outside the key and foreign keys");
+            }
+            return c.name();
+        }
+        for (SchemaModel.Column c : t.columns()) {
+            if (VERSION_NAMES.contains(c.name().toUpperCase(Locale.ROOT)) && isInteger(c)
+                    && !t.primaryKey().contains(c.name()) && !fkColumns.contains(c.name())) {
+                return c.name();
+            }
+        }
+        return null;
+    }
+
+    private static boolean isInteger(SchemaModel.Column c) {
+        String type = javaType(c);
+        return "Integer".equals(type) || "Long".equals(type);
     }
 
     private static String relationName(SchemaModel.ForeignKey fk, String targetEntity) {
@@ -300,6 +350,9 @@ public final class DefinitionGenerator {
             r.append("\nRelationships from foreign keys:\n\n");
             m.relationships().forEach(rel -> r.append("- ").append(rel).append('\n'));
         }
+        r.append("\nOptimistic lock versions: ").append(versionNotes.isEmpty() ? "none found"
+                : String.join(", ", versionNotes)).append(". The server is read-only; write operations need a "
+                + "version on the entity they change, or a lock through a relationship (spec 4.9).\n");
         r.append("\nEnvironment: `").append(prefix).append("_DB_URL` and `").append(prefix)
                 .append("_DB_USER` override the defaults in the descriptor. The password comes from `")
                 .append(options.passwordEnv() == null ? prefix + "_DB_PASSWORD" : options.passwordEnv())

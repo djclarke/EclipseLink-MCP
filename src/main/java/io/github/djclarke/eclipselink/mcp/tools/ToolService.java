@@ -34,7 +34,11 @@ import org.eclipse.persistence.queries.ReportQueryResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
 import io.github.djclarke.eclipselink.mcp.definition.Descriptor;
+import io.github.djclarke.eclipselink.mcp.definition.WriteDefinition;
+import io.github.djclarke.eclipselink.mcp.write.Lock;
+import io.github.djclarke.eclipselink.mcp.write.NamedWrite;
 import io.github.djclarke.eclipselink.mcp.definition.QueryDefinition;
 import io.github.djclarke.eclipselink.mcp.definition.ReportDefinition;
 import io.github.djclarke.eclipselink.mcp.json.EntityJson;
@@ -56,9 +60,17 @@ public final class ToolService {
 
     private static final Logger AUDIT = LoggerFactory.getLogger("eclipselink.mcp.audit");
 
+    /** What a tool does to data, for its MCP annotations. */
+    public enum Kind { READ, CREATE, UPDATE, DELETE }
+
     /** A tool's metadata and handler. The handler throws {@link ToolException} for agent-facing errors. */
     public record Tool(String name, String title, String description, Map<String, Object> inputSchema,
-                       Function<Map<String, Object>, Map<String, Object>> handler) {
+                       Function<Map<String, Object>, Map<String, Object>> handler, Kind kind) {
+
+        public Tool(String name, String title, String description, Map<String, Object> inputSchema,
+                    Function<Map<String, Object>, Map<String, Object>> handler) {
+            this(name, title, description, inputSchema, handler, Kind.READ);
+        }
     }
 
     private final ModelRuntime model;
@@ -67,10 +79,22 @@ public final class ToolService {
     private final EntityJson json;
     private final Map<String, NamedReport> reports = new LinkedHashMap<>();
     private final Map<String, NamedQuery> queries = new LinkedHashMap<>();
+    private final Map<String, NamedWrite> writes = new LinkedHashMap<>();
+    private final Map<String, Lock> locks = new LinkedHashMap<>();
     private final Map<String, Tool> tools = new LinkedHashMap<>();
+    private final boolean dryRun;
 
     public ToolService(ModelRuntime model) {
+        this(model, false);
+    }
+
+    /**
+     * @param dryRun write tools flush and then roll back instead of committing (the {@code call} command's
+     *               default, docs 7.5)
+     */
+    public ToolService(ModelRuntime model, boolean dryRun) {
         this.model = model;
+        this.dryRun = dryRun;
         Descriptor d = model.definition().descriptor();
         this.limits = d.limits();
         this.audit = d.logging().audit();
@@ -81,6 +105,16 @@ public final class ToolService {
         }
         for (QueryDefinition q : model.definition().queries()) {
             queries.put(q.toolName(), NamedQuery.compile(q, model));
+        }
+        for (ClassDescriptor entity : model.entities().values()) {
+            Lock lock = Lock.of(entity); // validates every entity's lock, used or not (spec 6, 5b)
+            if (lock != null) {
+                locks.put(entity.getAlias(), lock);
+            }
+        }
+        // Write operations are validated even when not exposed, so a disabled one cannot rot unnoticed.
+        for (WriteDefinition w : model.definition().writes()) {
+            writes.put(w.toolName(), NamedWrite.compile(w, model));
         }
 
         Descriptor.Tools enabled = d.tools();
@@ -146,6 +180,28 @@ public final class ToolService {
                         q.inputSchema(limits.maxPageSize()), args -> runQuery(q, args)));
             }
         }
+        // The dry-run service (the call command) can preview operations before tools.writes is switched on.
+        if (enabled.writes() || dryRun) {
+            for (NamedWrite w : writes.values()) {
+                WriteDefinition def = w.definition();
+                add(new Tool(def.toolName(), def.title() == null ? def.name() : def.title(), w.toolDescription(),
+                        w.inputSchema(), args -> runWrite(w, args), Kind.valueOf(w.action().name())));
+            }
+        }
+    }
+
+    /** Write operations exposed as tools (none unless {@code tools.writes} is on). */
+    public Collection<NamedWrite> exposedWrites() {
+        return model.definition().descriptor().tools().writes() || dryRun ? writes.values() : List.of();
+    }
+
+    private Map<String, Object> runWrite(NamedWrite write, Map<String, Object> args) {
+        EntityManager em = model.createEntityManager();
+        try {
+            return write.run(em, args, json, dryRun);
+        } finally {
+            em.close();
+        }
     }
 
     public Collection<NamedQuery> queries() {
@@ -163,6 +219,10 @@ public final class ToolService {
     /** Calls a tool by name, with audit logging. Throws {@link ToolException} for agent-facing errors. */
     public Map<String, Object> call(String name, Map<String, Object> args) {
         Tool tool = tools.get(name);
+        if (tool == null && writes.containsKey(name)) {
+            throw new ToolException(ToolException.Code.INVALID_PARAMETER, "Write operation '" + name
+                    + "' is not enabled: this server is read-only until the descriptor sets tools.writes: true");
+        }
         if (tool == null) {
             throw new ToolException(ToolException.Code.INVALID_PARAMETER, "Unknown tool '" + name + "'");
         }
@@ -180,7 +240,7 @@ public final class ToolService {
                     "The query took longer than " + limits.queryTimeoutSeconds() + "s; narrow the filter");
         } catch (PersistenceException | DatabaseException e) {
             outcome = "DATABASE_ERROR";
-            AUDIT.warn("Database error in {}: {}", name, e.toString());
+            AUDIT.warn("Database error in {}: {}", name, e.toString().replace("\n", " "));
             // Never pass SQL, connection details or driver messages back to the agent.
             throw new ToolException(ToolException.Code.DATABASE_ERROR, "The database reported an error");
         } finally {
@@ -217,6 +277,11 @@ public final class ToolService {
         out.put("name", d.getAlias());
         putIfNotNull(out, "description", ModelRuntime.description(d));
         out.put("key", Mappings.keyAttributes(d));
+        Lock lock = locks.get(d.getAlias());
+        if (lock != null) {
+            out.put("lock", lock.describe());
+        }
+        String versionAttribute = Mappings.versionAttribute(d);
         List<Object> attributes = new ArrayList<>();
         List<Object> relationships = new ArrayList<>();
         Map<String, Object> props = new LinkedHashMap<>();
@@ -233,8 +298,15 @@ public final class ToolService {
                     a.put("timeZone", "none: the value as stored in the database");
                 }
                 a.put("key", Mappings.isKey(d, m));
+                if (m.getAttributeName().equals(versionAttribute)) {
+                    a.put("version", true);
+                    a.put("description", "Optimistic lock version: always returned with the key; send it back "
+                            + "unchanged to write tools");
+                }
                 a.put("nullable", m.getField() != null && m.getField().isNullable() && !Mappings.isKey(d, m));
-                putIfNotNull(a, "description", Mappings.description(m));
+                if (!a.containsKey("description")) {
+                    putIfNotNull(a, "description", Mappings.description(m));
+                }
                 attributes.add(a);
                 Map<String, Object> s = new LinkedHashMap<>(schema);
                 putIfNotNull(s, "description", Mappings.description(m));
@@ -274,7 +346,7 @@ public final class ToolService {
         EntityJson.Selection selection = EntityJson.Selection.parse(d, stringList(args.get("select"), "select"));
 
         ExpressionBuilder eb = new ExpressionBuilder();
-        Expression where = keyExpression(d, eb, id);
+        Expression where = Mappings.keyExpression(d, eb, id);
         ReadAllQuery q = new ReadAllQuery(d.getJavaClass(), eb);
         q.setSelectionCriteria(where);
         q.setIsReadOnly(true);
@@ -427,7 +499,9 @@ public final class ToolService {
     // ---- helpers -------------------------------------------------------------------------------------------
 
     private void add(Tool tool) {
-        tools.put(tool.name(), tool);
+        if (tools.putIfAbsent(tool.name(), tool) != null) {
+            throw new DefinitionException("Two tools are named '" + tool.name() + "'");
+        }
     }
 
     private Map<String, Object> entityParam() {
@@ -468,31 +542,6 @@ public final class ToolService {
                     "Unknown entity '" + name + "'; use one of " + model.entities().keySet());
         }
         return d;
-    }
-
-    private Expression keyExpression(ClassDescriptor d, ExpressionBuilder eb, Object id) {
-        List<String> keys = Mappings.keyAttributes(d);
-        Expression where = null;
-        if (id instanceof Map<?, ?> composite) {
-            for (String k : keys) {
-                if (!composite.containsKey(k)) {
-                    throw new ToolException(ToolException.Code.INVALID_PARAMETER,
-                            "'id' must contain key attribute '" + k + "'");
-                }
-                Expression e = eb.get(k).equal(Mappings.convert(composite.get(k),
-                        Mappings.attributeType(d.getMappingForAttributeName(k)), k));
-                where = where == null ? e : where.and(e);
-            }
-        } else {
-            if (keys.size() != 1) {
-                throw new ToolException(ToolException.Code.INVALID_PARAMETER,
-                        d.getAlias() + " has a composite key " + keys + "; pass 'id' as an object");
-            }
-            String k = keys.get(0);
-            where = eb.get(k).equal(Mappings.convert(id,
-                    Mappings.attributeType(d.getMappingForAttributeName(k)), k));
-        }
-        return where;
     }
 
     private static int intArg(Map<String, Object> args, String name, int dflt, int min, int max) {
