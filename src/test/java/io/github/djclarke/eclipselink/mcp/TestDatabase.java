@@ -16,7 +16,6 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -29,6 +28,7 @@ import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
  * Test harness: creates the sample "existing" sales database as an H2 file database under
  * {@code target/test-db/sales}, from {@code src/test/resources/db}. It is rebuilt once per test JVM, so every
  * {@code mvn test} starts from the same data, and the file is left behind for manual runs (see README).
+ * {@code mvn -Psample-db process-test-resources} builds the same database from the same script without the tests.
  *
  * <p>The MCP server connects as the read-only {@code MCP_READER} account, never as the owner.
  */
@@ -64,11 +64,7 @@ public final class TestDatabase {
 
     private static void create() {
         try (Connection c = DriverManager.getConnection(URL, "sa", "")) {
-            try (Statement s = c.createStatement()) {
-                s.execute("DROP ALL OBJECTS");
-            }
-            run(c, "/db/sales-schema.sql");
-            run(c, "/db/sales-data.sql");
+            run(c, "/db/sales-db.sql");
         } catch (SQLException e) {
             throw new IllegalStateException("Could not create test database at " + FILE, e);
         }
