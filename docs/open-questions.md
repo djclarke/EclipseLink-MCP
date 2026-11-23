@@ -22,10 +22,14 @@ Decisions to make before or during the first prototype. Proposed answers are mar
 10. **Row filters:** use `@AdditionalCriteria` generated onto dynamic descriptors, or apply criteria in the query tool layer? (Descriptor-level is stronger since it covers relationship traversal.)
 11. **Caching:** isolated cache per caller, shared cache with additional criteria, or no shared cache for filtered entities?
 12. **Audit sink:** log file, database table, or OpenTelemetry?
+13. **Connection pooling:** EclipseLink's internal pool, or an external `DataSource` such as HikariCP? *Decided: internal pool for milestone 1, with a config switch to an external `DataSource` for the HTTP/multi-user milestone (see NFR-6).*
+
+13a. **Multi-caller database identity:** when one server serves callers with different permissions, do we run one instance per permission set, map each caller to its own database identity (exclusive connections or Oracle proxy authentication), or enforce the in-app policy layer over one shared account? *Decided for now: one shared account, and any authenticated user can read whatever that account can access (requirements 5.0). Per-caller identity or policy is deferred.*
 
 ## Scope
 
-13. **JPQL tool:** include in milestone 1 (behind a flag) or defer?
-14. **XML output:** needed for MCP clients, or JSON only with XML as a later option?
-15. **Writes:** which milestone, and do they need approval flows (e.g. MCP elicitation) before committing?
-16. **Repo relationship:** standalone project, or eventually a module/incubator under EclipseLink?
+14. **JPQL tool:** include in milestone 1 (behind a flag) or defer?
+15. **Report queries in milestone 1:** ad hoc `report_query` tool, named reports only, or both? *Decided: named reports only, no ad hoc reports from MCP callers (see 4.5).*
+16. **XML output:** needed for MCP clients, or JSON only with XML as a later option?
+17. **Writes:** which milestone, and do they need approval flows (e.g. MCP elicitation) before committing?
+18. **Repo relationship:** standalone project, or eventually a module/incubator under EclipseLink?

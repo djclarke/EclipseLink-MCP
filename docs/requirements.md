@@ -53,6 +53,7 @@ Provide an MCP server that:
 | `describe_entity` | Attributes, types, keys, relationships and JSON Schema, filtered to what the caller may see |
 | `find_entity` | Fetch by primary key, with optional projection and relationship depth |
 | `query_entities` | Constrained query: entity, filter, sort, projection, paging (see 4.4) |
+| `report_<name>` | One tool per named report defined in the model config: a read-only projection across related entities (see 4.5) |
 
 - FR-10: Expose entity descriptions as MCP resources as well as tools (so clients can attach schema context).
 - FR-11: All list/query results are paged with a hard maximum page size and a continuation token.
@@ -65,15 +66,42 @@ Provide an MCP server that:
 - FR-15: Never expose native SQL to agents.
 - FR-16: Limits per request: max rows, max relationship depth, query timeout, and max result size in bytes.
 
-### 4.5 Later milestones
+### 4.5 Report queries (read-only projections)
 
+Many agent questions need a flat result built from several tables ("customer name, order count and total by region"). Loading full entity graphs for that is wasteful. EclipseLink's `ReportQuery` returns only the selected values in one SQL statement, without building or caching entities.
+
+Decided (2026-11-23): report queries are **named reports only**. MCP callers cannot build ad hoc reports; they pick a published report and supply its parameters.
+
+- FR-17: The data owner defines named reports in the model config. Each has a name, description, root entity, selected attribute paths (navigating relationships, e.g. `customer.name`, `orderLines.product.category`), fixed filter, grouping, aggregates (count, sum, avg, min, max), default sort, and typed parameters (e.g. `region`, `fromDate`).
+- FR-18: Each named report is exposed as its own MCP tool (e.g. `report_sales_by_region`), whose input schema is the report's parameters plus paging. Callers can supply parameter values and page through results, nothing else; they cannot change the selection, joins, filter or grouping.
+- FR-19: Reports run as EclipseLink `ReportQuery` (or the equivalent JPQL/Criteria multi-select). Joins come from mapped relationships only, with inner or outer join set per path in the definition.
+- FR-20: Results are rows of named columns, with a JSON Schema for the row derived from the selected attributes' mapped types.
+- FR-21: Report queries never return managed entities and never touch the shared object cache, so they suit large read-only scans within the limits in FR-16.
+- FR-22: Report definitions are validated at startup against the model (paths exist, types match, parameters are used), and an invalid report fails startup rather than being silently dropped.
+- FR-23 (security): Reports run under the same caller context as every other tool: database permissions in milestone 1 (5.0), and in later milestones the caller's row filters on every entity reached, plus field visibility on every selected or filtered attribute. Reports can also be limited to roles (SR-3).
+
+### 4.6 Later milestones
+
+- Ad hoc report queries are out of scope (see 4.5).
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
-- Aggregations (count, sum, group by) through the structured query tool.
 - Change notifications as MCP resource subscriptions.
 
 ## 5. Security requirements
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
+
+### 5.0 Starting assumption (milestone 1)
+
+The database account the server connects with has the same permissions as the MCP client it serves. Access is therefore enforced by the database's own grants (and views, row-level security or VPD where the DBA has set them up), and the server can only ever return what that account can read.
+
+Consequences:
+
+- Milestone 1 does not need the role-to-policy layer (SR-4, SR-5, SR-8, SR-9, SR-11) to be secure. Those requirements stay in scope for later milestones, when one server serves callers with different permissions.
+- Model building should only see what the account can see: introspection runs as that account, so tables it cannot read do not become entities.
+- Tool exposure (SR-3) still applies, so a read-only deployment never offers write tools even if the account could write.
+- This holds with the internal connection pool (NFR-6) because every pooled connection uses the one account, which matches the single caller in milestone 1.
+- Decided (2026-11-23): this carries into the HTTP, multi-user milestone. The server uses **one shared database account**, and **any authenticated MCP user can read whatever that account can access**. Authentication (SR-1) decides who may connect at all; it does not narrow what they can read.
+- Deferred: per-caller access (separate database identity per caller via EclipseLink exclusive connections or Oracle proxy authentication, or the in-app policy layer in 5.2 to 5.4). Deployments that need different permission sets run separate server instances with separate accounts until then.
 
 ### 5.1 Identity
 
@@ -101,7 +129,7 @@ Access control must not depend on the model behaving. The agent should never rec
 - SR-10: Each MCP request gets its own EntityManager created with the caller's properties. No shared EntityManager across callers. Shared cache use must respect row filters (isolated or partitioned cache where needed).
 - SR-11: Policy is declarative (one file, per entity and role), validated at startup, and fails closed on errors.
 - SR-12: Audit log for every tool call: caller, roles, tool, arguments, generated query, row count, duration, outcome.
-- SR-13: Database credentials are never exposed to the agent; the server connects with a least-privilege database account.
+- SR-13: Database credentials are never exposed to the agent; the server connects with a least-privilege database account that, in milestone 1, matches the MCP client's permissions (5.0).
 
 ### 5.6 Example policy (illustrative)
 
@@ -131,6 +159,7 @@ claims:
 - NFR-3: Works with common databases (Derby/H2 for the sample, then PostgreSQL, MySQL, Oracle).
 - NFR-4: Startup on a schema of ~200 tables in under 10 seconds (target, to verify).
 - NFR-5: Integration tests run against an embedded sample database with fixed seed data, including tests that prove each role cannot see filtered rows or fields.
+- NFR-6: Connection pooling. *Decided (2026-11-23):* use EclipseLink's internal connection pool for milestone 1 (stdio, single caller, H2, read-only), configured through persistence unit properties (`eclipselink.connection-pool.*`). Keep a config switch to use an external `DataSource` instead (e.g. HikariCP, or a container/JNDI pool) for the HTTP, multi-user milestone. Either way, per-caller security comes from EntityManager properties, not separate database connections or credentials per caller (unless VPD push-down needs connection-level context, see SR-7).
 
 ## 7. Risks
 
