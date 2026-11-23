@@ -324,7 +324,7 @@ What a host needs to run one deployment.
 | **Kubernetes / cloud container service** | HTTP | Deployment + Service + Ingress; secrets from a Secret or cloud secret manager | Production, several definitions side by side |
 | **Embedded in an app** | App's own (servlet, Helidon, Spring, ...) | The app mounts the MCP endpoint | Existing JPA apps (requirements 2) |
 
-Each definition is its own process or pod. Several definitions are hosted by running several instances, not by loading them into one process; this keeps one account per trust boundary.
+Each definition is its own process or pod, covering one database and one mapped model (requirements 2). Several definitions are hosted by running several instances, not by loading them into one process; this keeps one account per trust boundary. Hosting several definitions in one runtime is future work (requirements 4.6).
 
 ### 5.3 Secrets and credentials
 

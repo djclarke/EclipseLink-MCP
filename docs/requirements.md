@@ -19,6 +19,8 @@ EclipseLink MCP is a **factory for MCP servers**, not one server. A single gener
 
 One instance per database account also gives one instance per trust boundary: callers who need different access get a different instance.
 
+**Scope (decided 2026-11-23):** each server definition covers **one database and one mapped model** (one persistence unit). Multi-model and multi-database support is future work (4.6), but the runtime is designed so it could later host several definitions: no static or JVM-wide state, and each definition owns its own EntityManagerFactory, pool, cache and tool registry.
+
 It is delivered in two forms:
 
 - **Standalone runtime (the POC).** An executable JAR (later a container image) that takes a JDBC connection and a config file and serves MCP, with no code to write.
@@ -102,6 +104,8 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 ### 4.6 Later milestones
 
 - Ad hoc report queries are out of scope (see 4.5).
+- **Multi-definition hosting:** one runtime process serving several definitions, each with its own persistence unit (EntityManagerFactory, session, pool and cache, possibly different databases and vendors), exposed as separate MCP endpoints or with tools namespaced per definition. Saves JVMs but merges trust boundaries in one process, so it waits for the security model (section 5).
+- **Composite definitions:** one model spanning several databases through EclipseLink composite persistence units (SessionBroker), with relationships between member units. Constraints: a single query cannot join across databases, so `query_entities` and named reports run against one member, or results are merged in memory with strict limits; writes across members would need JTA two-phase commit. Read-only use fits first.
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
 - Change notifications as MCP resource subscriptions.
 
