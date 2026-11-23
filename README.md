@@ -1,9 +1,6 @@
 # EclipseLink MCP
 
-<!-- Walkthrough video: replace VIDEO_URL (both places) with the https://github.com/user-attachments/assets/... link GitHub creates when you drag the MP4 into this file in the web editor. The bare link on its own line renders as a player; the image is a fallback for viewers that don't play video. -->
-VIDEO_URL
-
-[![Watch the 2:33 walkthrough: from an existing database to an MCP server, no code](docs/media/walkthrough-poster.jpg)](VIDEO_URL)
+[![Watch the 2:33 walkthrough: from an existing database to an MCP server, no code](docs/media/walkthrough-poster.jpg)](https://github.com/user-attachments/assets/c88e6dbe-8832-4fbe-9545-ed432ea65f16)
 
 A factory for [MCP](https://modelcontextprotocol.io) servers built on EclipseLink, letting AI agents work with an existing relational database through a mapped object model rather than raw SQL.
 
