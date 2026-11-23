@@ -13,7 +13,7 @@ EclipseLink MCP is a **factory for MCP servers**, not one server. A single gener
 | Part of a deployment | Example |
 |---|---|
 | Database connection and account | JDBC URL, one shared read-only account (5.0) |
-| Model | introspected schema plus overrides, or an existing persistence unit (4.1) |
+| Model | dynamic entities generated from the schema, plus overrides (4.1) |
 | Named reports | `report_sales_by_region` (4.5) |
 | Tool settings | which tools are exposed, limits (4.3, FR-16) |
 
@@ -21,12 +21,7 @@ One instance per database account also gives one instance per trust boundary: ca
 
 **Scope (decided 2026-11-23):** each server definition covers **one database and one mapped model** (one persistence unit). Multi-model and multi-database support is future work (4.6), but the runtime is designed so it could later host several definitions: no static or JVM-wide state, and each definition owns its own EntityManagerFactory, pool, cache and tool registry.
 
-It is delivered in two forms:
-
-- **Standalone runtime (the POC).** An executable JAR (later a container image) that takes a JDBC connection and a config file and serves MCP, with no code to write.
-- **Embeddable library.** An application that already has JPA entities and a persistence unit adds a dependency and exposes its own model and named reports over MCP, reusing its existing mappings, pool and transport. This targets existing EclipseLink users.
-
-Both forms share the same core (model building, MOXy binding, tool generation); the standalone runtime is a thin launcher over the library.
+**Delivery (decided 2026-11-23):** a **generated, codeless standalone server** only. An executable JAR (later a container image) takes a JDBC connection and a generated server definition and serves MCP, with no code to write. An embeddable library for applications with existing JPA entities is out of scope for now (see 4.6); internal code is still kept modular so it could be extracted later.
 
 Each instance:
 
@@ -56,7 +51,7 @@ Each instance:
 - FR-1: Introspect a JDBC schema (tables, columns, PKs, FKs, unique constraints) and build EclipseLink dynamic entities (`DynamicHelper` / `JPADynamicHelper`).
 - FR-2: Infer relationships from foreign keys (1:1, M:1, 1:M, and M:N through join tables).
 - FR-3: Allow an override file (e.g. `eclipselink-orm.xml` or a YAML/JSON model config) to rename entities/attributes, hide tables/columns, add or fix relationships, and add descriptions used in tool metadata.
-- FR-4: Optionally load an existing persistence unit with static entity classes instead of introspection.
+- FR-4: (Deferred.) Loading an existing persistence unit with static entity classes is out of scope; models are always generated dynamic entities.
 - FR-5: Rebuild or reload the model without restarting (nice to have).
 
 ### 4.2 JSON/XML binding
@@ -104,6 +99,7 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 ### 4.6 Later milestones
 
 - Ad hoc report queries are out of scope (see 4.5).
+- **Embeddable library:** let an application with existing JPA entities and a persistence unit expose its model and reports over MCP, reusing its mappings, pool and transport (with an "embed in an app" skill). Not planned for now (decided 2026-11-23).
 - **Multi-definition hosting:** one runtime process serving several definitions, each with its own persistence unit (EntityManagerFactory, session, pool and cache, possibly different databases and vendors), exposed as separate MCP endpoints or with tools namespaced per definition. Saves JVMs but merges trust boundaries in one process, so it waits for the security model (section 5).
 - **Composite definitions:** one model spanning several databases through EclipseLink composite persistence units (SessionBroker), with relationships between member units. Constraints: a single query cannot join across databases, so `query_entities` and named reports run against one member, or results are merged in memory with strict limits; writes across members would need JTA two-phase commit. Read-only use fits first.
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
@@ -116,7 +112,6 @@ The repo ships its own Claude skills for working with the factory. They double a
 - FR-24: Skills for the factory's main tasks:
   - **Configure a server from a schema:** inspect a database, generate the model config, and refine it (names, hidden tables and columns, relationships, descriptions).
   - **Author named reports:** turn a request such as "sales by region" into a report definition that passes startup validation (FR-22).
-  - **Embed in an app:** add the library to an existing JPA project and expose chosen entities and reports over MCP.
   - **Validate and troubleshoot:** explain startup failures, mapping mismatches and invalid reports.
 - FR-25: Self-contained (decided 2026-11-23). The skills live in this repo and do not depend on the EclipseLink-JPA-skills repo. Shared material can be factored out later if that proves useful.
 - FR-26: Timing. Skills are written once the POC config format settles, so they do not churn with it.

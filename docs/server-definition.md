@@ -8,7 +8,7 @@ This spec defines the output of the design-time workflow (requirements 4.8): the
 
 | Term | Meaning |
 |---|---|
-| **Runtime** | The generic EclipseLink MCP server JAR (library plus standalone launcher). Same for every deployment. |
+| **Runtime** | The generic EclipseLink MCP server JAR. Same for every deployment. |
 | **Server definition** | A directory of versioned files describing one MCP server: connection, model, JSON bindings, reports, prompts and tool settings. Produced by the design-time skills, reviewed in git. |
 | **Deployment** | A runtime plus one server definition plus secrets from the environment. One deployment is one MCP server instance, one database account, one trust boundary. |
 
@@ -51,7 +51,7 @@ connection:
   pool:                             # EclipseLink internal pool (NFR-6)
     min: 1
     max: 8
-  # dataSource: java:comp/env/jdbc/sales   # alternative: external DataSource (embedded/library use)
+  # dataSource: java:comp/env/jdbc/sales   # alternative: external DataSource (later, e.g. a container-managed pool)
 
 model:
   mappings: model/eclipselink-orm.xml
@@ -155,7 +155,6 @@ from open orders if relevant.
 | **Definition directory + runtime JAR** | `java -jar eclipselink-mcp-server.jar --definition ./sales-db` | Development, POC. *Proposed default.* |
 | **Bundled JAR** | One executable JAR with runtime, definition and JDBC driver, built by `eclipselink-mcp package ./sales-db` | Hand to a user or client config with no other files. |
 | **Container image** | Runtime image with the definition copied or mounted at `/definition` | HTTP deployments (later milestone). |
-| **Embedded library** | App code calls `EclipseLinkMcp.server(definition, entityManagerFactory)` and supplies its own transport | Apps with existing JPA entities (requirements 2). |
 
 All forms read the same definition format, so a definition moves between them unchanged.
 
@@ -322,7 +321,6 @@ What a host needs to run one deployment.
 | **Local process** | stdio | The MCP client launches `java -jar ...` (3.4); one process per client session | POC, desktop users, DB reachable from the laptop |
 | **Container** | HTTP | `docker run -e SALES_DB_PASSWORD=... -v ./sales-db:/definition:ro -p 8080:8080 eclipselink-mcp` | Shared team server, later milestone |
 | **Kubernetes / cloud container service** | HTTP | Deployment + Service + Ingress; secrets from a Secret or cloud secret manager | Production, several definitions side by side |
-| **Embedded in an app** | App's own (servlet, Helidon, Spring, ...) | The app mounts the MCP endpoint | Existing JPA apps (requirements 2) |
 
 Each definition is its own process or pod, covering one database and one mapped model (requirements 2). Several definitions are hosted by running several instances, not by loading them into one process; this keeps one account per trust boundary. Hosting several definitions in one runtime is future work (requirements 4.6).
 
