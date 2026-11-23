@@ -53,7 +53,7 @@ Provide an MCP server that:
 | `describe_entity` | Attributes, types, keys, relationships and JSON Schema, filtered to what the caller may see |
 | `find_entity` | Fetch by primary key, with optional projection and relationship depth |
 | `query_entities` | Constrained query: entity, filter, sort, projection, paging (see 4.4) |
-| `report_query` | Read-only projection across related entities, with grouping and aggregates (see 4.5) |
+| `report_<name>` | One tool per named report defined in the model config: a read-only projection across related entities (see 4.5) |
 
 - FR-10: Expose entity descriptions as MCP resources as well as tools (so clients can attach schema context).
 - FR-11: All list/query results are paged with a hard maximum page size and a continuation token.
@@ -70,15 +70,19 @@ Provide an MCP server that:
 
 Many agent questions need a flat result built from several tables ("customer name, order count and total by region"). Loading full entity graphs for that is wasteful. EclipseLink's `ReportQuery` returns only the selected values in one SQL statement, without building or caching entities.
 
-- FR-17: Provide a `report_query` tool that takes a root entity, a list of selected attribute paths (navigating relationships, e.g. `customer.name`, `orderLines.product.category`), a structured filter (same format as 4.4), grouping, aggregates (count, sum, avg, min, max), sort and paging, and runs it as an EclipseLink `ReportQuery` (or the equivalent JPQL/Criteria multi-select).
-- FR-18: Joins come from mapped relationships only; the tool does not accept arbitrary join conditions. Inner vs outer join is selectable per path.
-- FR-19: Results are returned as rows of named columns, with a JSON Schema for the row derived from the selected attributes' mapped types.
-- FR-20: Allow named reports in the model config: predefined projections with descriptions and parameters, exposed as their own MCP tools (e.g. `report_sales_by_region`). This lets the data owner publish tuned, reviewed queries for common questions.
-- FR-21: Report queries never return managed entities and never touch the shared object cache, so they are safe for large read-only scans within the limits in FR-16.
-- FR-22 (security): Every entity reached by a selected path or filter must be visible to the caller; its row filters (SR-5, SR-6) apply to the join; and every selected or filtered attribute must be visible to the caller (SR-8). Aggregates over hidden fields are rejected, so totals cannot leak data the caller cannot see row by row.
+Decided (2026-11-23): report queries are **named reports only**. MCP callers cannot build ad hoc reports; they pick a published report and supply its parameters.
+
+- FR-17: The data owner defines named reports in the model config. Each has a name, description, root entity, selected attribute paths (navigating relationships, e.g. `customer.name`, `orderLines.product.category`), fixed filter, grouping, aggregates (count, sum, avg, min, max), default sort, and typed parameters (e.g. `region`, `fromDate`).
+- FR-18: Each named report is exposed as its own MCP tool (e.g. `report_sales_by_region`), whose input schema is the report's parameters plus paging. Callers can supply parameter values and page through results, nothing else; they cannot change the selection, joins, filter or grouping.
+- FR-19: Reports run as EclipseLink `ReportQuery` (or the equivalent JPQL/Criteria multi-select). Joins come from mapped relationships only, with inner or outer join set per path in the definition.
+- FR-20: Results are rows of named columns, with a JSON Schema for the row derived from the selected attributes' mapped types.
+- FR-21: Report queries never return managed entities and never touch the shared object cache, so they suit large read-only scans within the limits in FR-16.
+- FR-22: Report definitions are validated at startup against the model (paths exist, types match, parameters are used), and an invalid report fails startup rather than being silently dropped.
+- FR-23 (security): Reports run under the same caller context as every other tool: database permissions in milestone 1 (5.0), and in later milestones the caller's row filters on every entity reached, plus field visibility on every selected or filtered attribute. Reports can also be limited to roles (SR-3).
 
 ### 4.6 Later milestones
 
+- Ad hoc report queries are out of scope (see 4.5).
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
 - Change notifications as MCP resource subscriptions.
 

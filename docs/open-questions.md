@@ -29,7 +29,7 @@ Decisions to make before or during the first prototype. Proposed answers are mar
 ## Scope
 
 14. **JPQL tool:** include in milestone 1 (behind a flag) or defer?
-15. **Report queries in milestone 1:** ad hoc `report_query` tool, named reports only, or both? *Proposed: both, since named reports are the safest way to offer tuned multi-table queries (see 4.5).*
+15. **Report queries in milestone 1:** ad hoc `report_query` tool, named reports only, or both? *Decided: named reports only, no ad hoc reports from MCP callers (see 4.5).*
 16. **XML output:** needed for MCP clients, or JSON only with XML as a later option?
 17. **Writes:** which milestone, and do they need approval flows (e.g. MCP elicitation) before committing?
 18. **Repo relationship:** standalone project, or eventually a module/incubator under EclipseLink?
