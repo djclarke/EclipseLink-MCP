@@ -83,7 +83,11 @@ public final class Mappings {
         return Object.class;
     }
 
-    /** JSON Schema for one basic attribute's value. */
+    /**
+     * JSON Schema for one basic attribute's value, following the fixed type contract (docs/server-definition.md
+     * 4.2.1): exact decimals are strings (format {@code decimal}), floating point values are numbers, and dates
+     * and times are ISO-8601 strings; values without a zone are {@code local-*} formats.
+     */
     public static Map<String, Object> jsonSchema(Class<?> type) {
         Map<String, Object> s = new LinkedHashMap<>();
         if (type == String.class || type == Character.class || type == char.class) {
@@ -92,25 +96,62 @@ public final class Mappings {
                 || type == Short.class || type == short.class || type == Byte.class || type == byte.class
                 || type == BigInteger.class) {
             s.put("type", "integer");
-        } else if (type == BigDecimal.class || type == Double.class || type == double.class
-                || type == Float.class || type == float.class) {
+        } else if (type == BigDecimal.class) {
+            s.put("type", "string");
+            s.put("format", "decimal");
+        } else if (type == Double.class || type == double.class || type == Float.class || type == float.class) {
             s.put("type", "number");
         } else if (type == Boolean.class || type == boolean.class) {
             s.put("type", "boolean");
         } else if (type == LocalDate.class || type == java.sql.Date.class) {
             s.put("type", "string");
             s.put("format", "date");
-        } else if (type == LocalDateTime.class || type == OffsetDateTime.class || type == java.sql.Timestamp.class
-                || type == java.util.Date.class || type == java.util.Calendar.class) {
+        } else if (type == LocalDateTime.class || type == java.sql.Timestamp.class) {
+            s.put("type", "string");
+            s.put("format", "local-date-time");
+        } else if (type == OffsetDateTime.class || type == java.time.ZonedDateTime.class
+                || type == java.time.Instant.class || type == java.util.Date.class || type == java.util.Calendar.class) {
             s.put("type", "string");
             s.put("format", "date-time");
         } else if (type == LocalTime.class || type == java.sql.Time.class) {
             s.put("type", "string");
+            s.put("format", "local-time");
+        } else if (type == java.time.OffsetTime.class) {
+            s.put("type", "string");
             s.put("format", "time");
+        } else if (type == byte[].class) {
+            s.put("type", "string");
+            s.put("contentEncoding", "base64");
         } else {
             s.put("type", "string");
         }
         return s;
+    }
+
+    /** {@link #jsonSchema(Class)} plus the column's scale for decimals, when the mapping declares one. */
+    public static Map<String, Object> jsonSchema(DatabaseMapping m) {
+        Map<String, Object> s = new LinkedHashMap<>(jsonSchema(attributeType(m)));
+        if ("decimal".equals(s.get("format")) && m.getField() != null && m.getField().getScale() > 0) {
+            s.put("scale", m.getField().getScale());
+        }
+        return s;
+    }
+
+    /** An example value in the contract's format, shown to agents in describe_entity. */
+    public static String example(Class<?> type) {
+        Object format = jsonSchema(type).get("format");
+        if (format == null) {
+            return null;
+        }
+        return switch (format.toString()) {
+            case "decimal" -> "\"1234.50\"";
+            case "date" -> "\"2026-11-23\"";
+            case "local-date-time" -> "\"2026-11-23T08:44:00\"";
+            case "date-time" -> "\"2026-11-23T08:44:00-05:00\"";
+            case "local-time" -> "\"08:44:00\"";
+            case "time" -> "\"08:44:00-05:00\"";
+            default -> null;
+        };
     }
 
     /** Short type name shown to agents in describe_entity. */
@@ -129,16 +170,31 @@ public final class Mappings {
                     "'" + path + "' needs a single value, not an object or list");
         }
         try {
+            // Exact and temporal values are parsed from their contract format (ISO-8601, plain decimal), never
+            // guessed: a value in another format is an error, not a conversion.
+            if (type == BigDecimal.class) {
+                return value instanceof BigDecimal b ? b : new BigDecimal(value.toString().strip());
+            }
             if (type == LocalDate.class) {
                 return LocalDate.parse(value.toString());
             }
             if (type == LocalDateTime.class) {
                 return LocalDateTime.parse(value.toString());
             }
+            if (type == OffsetDateTime.class) {
+                return OffsetDateTime.parse(value.toString());
+            }
+            if (type == LocalTime.class) {
+                return LocalTime.parse(value.toString());
+            }
+            if (type == java.time.OffsetTime.class) {
+                return java.time.OffsetTime.parse(value.toString());
+            }
             return ConversionManager.getDefaultManager().convertObject(value, type);
         } catch (RuntimeException e) {
             throw new ToolException(ToolException.Code.INVALID_FILTER,
-                    "'" + path + "': cannot use " + value + " as " + typeName(type));
+                    "'" + path + "': cannot use " + value + " as " + typeName(type)
+                            + (example(type) == null ? "" : "; use e.g. " + example(type)));
         }
     }
 }

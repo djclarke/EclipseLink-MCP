@@ -125,7 +125,7 @@ class EditCommandTest {
 
     @Test
     void trimColumnsButNotKeys() {
-        assertEquals(0, edit("remove-attribute", "Customer", "email", "region"), err);
+        assertEquals(0, edit("remove-attribute", "Customer", "email", "region", "creditLimit"), err);
         assertEquals(Set.of("id", "name"), Set.copyOf(((List<?>) describe("Customer").get("attributes")).stream()
                 .map(a -> ((Map<?, ?>) a).get("name")).toList()));
         assertEquals(1, edit("remove-attribute", "Customer", "id"));

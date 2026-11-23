@@ -16,7 +16,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -70,7 +69,8 @@ class ToolServiceTest {
                 .filter(a -> a.get("name").equals("orderDate")).findFirst().orElseThrow();
         assertEquals("date", orderDate.get("type"));
         Map<?, ?> props = (Map<?, ?>) ((Map<?, ?>) d.get("jsonSchema")).get("properties");
-        assertEquals("number", ((Map<?, ?>) props.get("total")).get("type"));
+        assertEquals(Map.of("type", "string", "format", "decimal", "scale", 2, "description", "Order total in USD"),
+                props.get("total"));
         assertEquals("Order total in USD", ((Map<?, ?>) props.get("total")).get("description"));
     }
 
@@ -78,7 +78,7 @@ class ToolServiceTest {
     void findEntityNestsToOneRelationshipsByDepth() {
         Map<?, ?> item = (Map<?, ?>) tools.call("find_entity", Map.of("entity", "Order", "id", 1005)).get("item");
         assertEquals("2026-09-15", item.get("orderDate"));
-        assertEquals(new BigDecimal("12000.00"), item.get("total"));
+        assertEquals("12000.00", item.get("total"));
         assertEquals("Umbrella Traders", ((Map<?, ?>) item.get("customer")).get("name"));
         assertFalse(item.containsKey("lines"), "to-many relationships are omitted unless selected");
 
@@ -152,7 +152,7 @@ class ToolServiceTest {
                 () -> tools.call("query_entities", Map.of("entity", "Salary"))).code());
         assertEquals(ToolException.Code.UNKNOWN_ATTRIBUTE, assertThrows(ToolException.class,
                 () -> tools.call("query_entities", Map.of("entity", "Order",
-                        "filter", Map.of("path", "customer.creditLimit", "op", "gt", "value", 1)))).code());
+                        "filter", Map.of("path", "customer.salary", "op", "gt", "value", 1)))).code());
         assertEquals(ToolException.Code.INVALID_FILTER, assertThrows(ToolException.class,
                 () -> tools.call("query_entities", Map.of("entity", "Order",
                         "filter", Map.of("path", "total", "op", "drop", "value", 1)))).code());
@@ -178,9 +178,9 @@ class ToolServiceTest {
         List<?> rows = (List<?>) result.get("rows");
         // Q3: NORTH 12000 (1005), WEST 5500 (1003), EAST 1870 (1001+1002); 1004 is cancelled.
         assertEquals(3, rows.size());
-        assertEquals(Map.of("region", "NORTH", "orderCount", 1L, "totalValue", new BigDecimal("12000.00")),
+        assertEquals(Map.of("region", "NORTH", "orderCount", 1L, "totalValue", "12000.00"),
                 rows.get(0));
-        assertEquals(Map.of("region", "EAST", "orderCount", 2L, "totalValue", new BigDecimal("1870.00")),
+        assertEquals(Map.of("region", "EAST", "orderCount", 2L, "totalValue", "1870.00"),
                 rows.get(2));
     }
 

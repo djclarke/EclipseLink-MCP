@@ -25,7 +25,8 @@ import io.github.djclarke.eclipselink.mcp.tools.ToolException;
 /** Typed parameters shared by named reports and named queries: validation, input schema and values. */
 final class Parameters {
 
-    static final Set<String> TYPES = Set.of("string", "integer", "decimal", "date", "boolean");
+    static final Set<String> TYPES = Set.of("string", "integer", "decimal", "date", "timestamp", "timestamptz",
+            "boolean");
     private static final Set<String> PAGING = Set.of("pageSize", "cursor");
 
     private Parameters() {
@@ -108,7 +109,19 @@ final class Parameters {
             Map<String, Object> s = new LinkedHashMap<>();
             switch (p.type()) {
                 case "integer" -> s.put("type", "integer");
-                case "decimal" -> s.put("type", "number");
+                case "decimal" -> {
+                    // A string keeps every digit; a JSON number is accepted too.
+                    s.put("type", List.of("string", "number"));
+                    s.put("format", "decimal");
+                }
+                case "timestamp" -> {
+                    s.put("type", "string");
+                    s.put("format", "local-date-time");
+                }
+                case "timestamptz" -> {
+                    s.put("type", "string");
+                    s.put("format", "date-time");
+                }
                 case "boolean" -> s.put("type", "boolean");
                 case "date" -> {
                     s.put("type", "string");
@@ -140,7 +153,9 @@ final class Parameters {
         try {
             return switch (type) {
                 case "integer" -> v instanceof Number n ? n.longValue() : Long.parseLong(v.toString());
-                case "decimal" -> new BigDecimal(v.toString());
+                case "decimal" -> new BigDecimal(v.toString().strip());
+                case "timestamp" -> java.time.LocalDateTime.parse(v.toString()).toString();
+                case "timestamptz" -> java.time.OffsetDateTime.parse(v.toString()).toString();
                 case "date" -> LocalDate.parse(v.toString()).toString();
                 case "boolean" -> v instanceof Boolean b ? b : Boolean.parseBoolean(v.toString());
                 default -> v.toString();
@@ -156,6 +171,8 @@ final class Parameters {
             case "integer" -> 0L;
             case "decimal" -> BigDecimal.ZERO;
             case "date" -> "2000-01-01";
+            case "timestamp" -> "2000-01-01T00:00:00";
+            case "timestamptz" -> "2000-01-01T00:00:00Z";
             case "boolean" -> Boolean.TRUE;
             default -> "x";
         };

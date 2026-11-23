@@ -14,7 +14,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -74,10 +73,10 @@ class GraphLoadingTest {
         List<?> items = (List<?>) out.get("items");
         assertEquals(List.of(1004L, 1002L, 1001L), items.stream().map(i -> ((Map<?, ?>) i).get("id")).toList());
         Map<String, Object> product = ordered("id", 2L, "name", "Gadget", "category", "HARDWARE");
-        Map<String, Object> line = ordered("id", 5L, "quantity", 2, "price", new BigDecimal("120.00"),
+        Map<String, Object> line = ordered("id", 5L, "quantity", 2, "price", "120.00",
                 "product", product);
         Map<String, Object> expected = ordered("id", 1004L, "orderDate", "2026-09-02", "status", "CANCELLED",
-                "total", new BigDecimal("240.00"), "customer", ordered("id", 3L, "name", "Initech"),
+                "total", "240.00", "customer", ordered("id", 3L, "name", "Initech"),
                 "lines", List.of(line));
         assertEquals(expected, items.get(0));
         assertEquals(List.copyOf(expected.keySet()), List.copyOf(((Map<?, ?>) items.get(0)).keySet()),

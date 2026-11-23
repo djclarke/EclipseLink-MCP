@@ -127,6 +127,8 @@ parameters:
   toDate: { type: date, required: true, description: "Exclusive (YYYY-MM-DD)" }
 ```
 
+Parameter types are `string`, `integer`, `decimal`, `date`, `timestamp` (no zone), `timestamptz` (with offset) and `boolean`. Match the column. Decimals come back as strings and dates as ISO-8601, by a fixed contract with no options (spec 4.2.1). When you show results, explain that to the user rather than offering to change it.
+
 Quote YAML values that contain `:` or start with a special character. Names match `[a-z][a-z0-9_]*`, and a query cannot be named `entities`.
 
 Validate each new file, then show its output with realistic parameters:

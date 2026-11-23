@@ -261,6 +261,38 @@ The generated `README.md` in each definition includes these snippets with the ri
 - Paging: input `pageSize` (default and max from `limits`) and `cursor` (opaque, from a previous result). Output `nextCursor` is present only when more rows exist.
 - Errors are tool results with `isError: true` and `structuredContent: { "error": { "code": ..., "message": ..., "details": ... } }`. Codes: `UNKNOWN_ENTITY`, `UNKNOWN_ATTRIBUTE`, `INVALID_FILTER`, `INVALID_PARAMETER`, `NOT_FOUND`, `LIMIT_EXCEEDED`, `TIMEOUT`, `DATABASE_ERROR` (message sanitized; no SQL or credentials).
 - Entity JSON is produced by MOXy from the model's bindings, so tool output and `describe_entity` schemas always agree.
+- Numbers, dates and times follow one fixed contract (4.2.1).
+
+#### 4.2.1 Numbers, dates and times
+
+Agents commonly lose precision on decimals and confuse time zones, so every server uses one fixed contract. **It has no options:** there is no setting to change formats, time zones or rounding, and no transformation of values. A value is returned as the database holds it, in the format below.
+
+| Column type (JDBC) | Java attribute type | JSON value | JSON Schema | Example |
+|---|---|---|---|---|
+| `DECIMAL`, `NUMERIC` | `BigDecimal` | **string**, plain notation, scale as stored | `{"type":"string","format":"decimal","scale":2}` | `"1234.50"` |
+| `REAL`, `FLOAT`, `DOUBLE` | `Float`, `Double` | number | `{"type":"number"}` | `0.25` |
+| `SMALLINT`, `INTEGER`, `BIGINT` | `Integer`, `Long` | number | `{"type":"integer"}` | `1042` |
+| `DATE` | `LocalDate` | string, ISO-8601 date | `format: date` | `"2026-11-23"` |
+| `TIME` | `LocalTime` | string, ISO-8601 local time | `format: local-time` | `"08:44:00"` |
+| `TIMESTAMP` | `LocalDateTime` | string, ISO-8601 local date-time, **no zone** | `format: local-date-time` | `"2026-11-23T08:44:00"` |
+| `TIMESTAMP WITH TIME ZONE` | `OffsetDateTime` | string, ISO-8601 with the **stored offset** | `format: date-time` | `"2026-11-23T08:44:00-05:00"` |
+| `TIME WITH TIME ZONE` | `OffsetTime` | string, ISO-8601 time with offset | `format: time` | `"08:44:00-05:00"` |
+| `BINARY`, `BLOB` | `byte[]` | string, base64 | `contentEncoding: base64` | |
+
+Rules:
+
+- **Decimals are strings,** because a JSON number becomes a binary double in most clients and silently loses digits: `1234567890123456.7891` survives only as a string. The string is the stored value in plain notation, never exponent form. Its scale is as the database returned it (`"50000.0000"` for a `NUMERIC(20,4)`), and is not rounded or padded. The schema's `scale` comes from the mapping's column `scale` when the model declares one. `init` writes `precision` and `scale` for every decimal column.
+- **Floating point is a JSON number,** since the value is approximate anyway. Non-finite values are the strings `"NaN"`, `"Infinity"` and `"-Infinity"`, which JSON numbers cannot express.
+- **Times always show seconds** (`"2026-10-01T00:00:00"`, not `"…T00:00"`). Fractions of a second appear only when stored (`"…T16:42:07.25"`).
+- **Zones are never invented or converted.** A `TIMESTAMP` without a zone is returned without one, and means whatever the database means by it. `describe_entity` marks such attributes `"timeZone": "none: the value as stored in the database"`. A `TIMESTAMP WITH TIME ZONE` keeps the offset it was stored with, and is not shifted to UTC or the server's zone. A zero offset is written `Z`.
+- **Aggregates in reports:** `count` is an integer. `sum` keeps its operand's kind, so a sum of decimals is a decimal string. `avg` is a number. `min` and `max` follow their column.
+- **Inputs** (filter values and report or query parameters) use the same formats. The server converts them to the column's Java type before binding, so agents never write SQL literals.
+  - Decimals: a string, or a number (strings keep every digit).
+  - Dates and times: ISO-8601 strings of the column's kind, for example a `local-date-time` for a `TIMESTAMP` column.
+  - Comparisons on `TIMESTAMP WITH TIME ZONE` are made by the database, which compares instants in H2, PostgreSQL and Oracle. So `2026-07-22T06:30:00-04:00` equals `2026-07-22T10:30:00Z`.
+  - A value in another format is rejected with `INVALID_FILTER` and an example of the right one. It is never guessed: there is no `"23/11/2026"` or date-only value for a timestamp.
+- Report and query parameter types are `string`, `integer`, `decimal`, `date`, `timestamp` (local), `timestamptz` (with offset) and `boolean`. Their input schemas use the formats above.
+- `describe_entity` lists each attribute's `type` (the format name above), `scale` for decimals, and an `example`.
 
 ### 4.3 Tools
 
