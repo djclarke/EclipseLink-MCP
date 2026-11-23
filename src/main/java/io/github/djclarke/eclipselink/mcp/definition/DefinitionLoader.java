@@ -73,22 +73,41 @@ public final class DefinitionLoader {
         validate(descriptor, dir);
 
         List<ReportDefinition> reports = loadReports(dir.resolve("reports"));
-        return new ServerDefinition(dir, descriptor, reports);
+        List<QueryDefinition> queries = loadQueries(dir.resolve("queries"));
+        return new ServerDefinition(dir, descriptor, reports, queries);
+    }
+
+    private List<QueryDefinition> loadQueries(Path queriesDir) {
+        List<QueryDefinition> queries = new ArrayList<>();
+        Set<String> names = new HashSet<>();
+        for (Path file : yamlFiles(queriesDir)) {
+            QueryDefinition query = convert(readTree(file), QueryDefinition.class, file);
+            require(query.name() != null && NAME.matcher(query.name()).matches(),
+                    file + ": query name must match " + NAME.pattern());
+            require(!query.name().equals("entities"), file + ": query name 'entities' is reserved (query_entities)");
+            require(names.add(query.name()), file + ": duplicate query name " + query.name());
+            require(query.root() != null, file + ": query needs a root entity");
+            require(!query.graph().isEmpty(), file + ": query needs a graph (the attribute paths to return)");
+            queries.add(query);
+        }
+        return queries;
+    }
+
+    private static List<Path> yamlFiles(Path dir) {
+        if (!Files.isDirectory(dir)) {
+            return List.of();
+        }
+        try (Stream<Path> s = Files.list(dir)) {
+            return s.filter(p -> p.toString().endsWith(".yaml") || p.toString().endsWith(".yml")).sorted().toList();
+        } catch (IOException e) {
+            throw new DefinitionException("Cannot list " + dir, e);
+        }
     }
 
     private List<ReportDefinition> loadReports(Path reportsDir) {
         List<ReportDefinition> reports = new ArrayList<>();
-        if (!Files.isDirectory(reportsDir)) {
-            return reports;
-        }
-        List<Path> files;
-        try (Stream<Path> s = Files.list(reportsDir)) {
-            files = s.filter(p -> p.toString().endsWith(".yaml") || p.toString().endsWith(".yml")).sorted().toList();
-        } catch (IOException e) {
-            throw new DefinitionException("Cannot list " + reportsDir, e);
-        }
         Set<String> names = new HashSet<>();
-        for (Path file : files) {
+        for (Path file : yamlFiles(reportsDir)) {
             ReportDefinition report = convert(readTree(file), ReportDefinition.class, file);
             require(report.name() != null && NAME.matcher(report.name()).matches(),
                     file + ": report name must match " + NAME.pattern());

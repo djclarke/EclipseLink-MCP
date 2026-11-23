@@ -93,6 +93,9 @@ public final class Main {
             out.println("  entities: " + String.join(", ", model.entities().keySet()));
             out.println("  reports:  " + String.join(", ",
                     tools.reports().stream().map(r -> r.definition().name()).toList()));
+            out.println("  queries:  " + String.join(", ",
+                    tools.queries().stream().map(q -> q.definition().name() + " (batch: "
+                            + String.join(", ", q.loadGraph().relationships()) + ")").toList()));
             out.println("  tools:    " + String.join(", ", tools.tools().stream().map(ToolService.Tool::name).toList()));
             model.close();
             return;

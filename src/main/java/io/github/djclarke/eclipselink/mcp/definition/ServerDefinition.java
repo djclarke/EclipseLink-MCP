@@ -12,10 +12,12 @@ package io.github.djclarke.eclipselink.mcp.definition;
 import java.nio.file.Path;
 import java.util.List;
 
-/**
- * A loaded server definition: the descriptor plus its reports, with paths resolved against its directory.
- */
-public record ServerDefinition(Path directory, Descriptor descriptor, List<ReportDefinition> reports) {
+public record ServerDefinition(Path directory, Descriptor descriptor, List<ReportDefinition> reports,
+                               List<QueryDefinition> queries) {
+
+    public ServerDefinition {
+        queries = queries == null ? List.of() : queries;
+    }
 
     public Path mappingsFile() {
         return directory.resolve(descriptor.model().mappings()).normalize();

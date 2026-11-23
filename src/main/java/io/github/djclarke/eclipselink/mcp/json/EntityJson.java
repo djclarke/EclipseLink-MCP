@@ -19,7 +19,13 @@ import java.util.Map;
 
 import org.eclipse.persistence.descriptors.ClassDescriptor;
 import org.eclipse.persistence.dynamic.DynamicEntity;
+import org.eclipse.persistence.internal.helper.ConversionManager;
+import org.eclipse.persistence.internal.helper.DatabaseField;
+import org.eclipse.persistence.internal.indirection.DatabaseValueHolder;
+import org.eclipse.persistence.internal.indirection.UnitOfWorkValueHolder;
+import org.eclipse.persistence.internal.sessions.AbstractRecord;
 import org.eclipse.persistence.mappings.DatabaseMapping;
+import org.eclipse.persistence.mappings.OneToOneMapping;
 
 import io.github.djclarke.eclipselink.mcp.query.AttributePath;
 import io.github.djclarke.eclipselink.mcp.query.Mappings;
@@ -49,12 +55,19 @@ public final class EntityJson {
     /** A tree of selected attribute names. A leaf (no children) means "this attribute, default shape". */
     public static final class Selection {
         final Map<String, Selection> children = new LinkedHashMap<>();
+        private List<String> paths = List.of();
+
+        /** The attribute paths this selection was parsed from. */
+        public List<String> paths() {
+            return paths;
+        }
 
         public static Selection parse(ClassDescriptor root, List<String> paths) {
             if (paths == null || paths.isEmpty()) {
                 return null;
             }
             Selection sel = new Selection();
+            sel.paths = List.copyOf(paths);
             for (String p : paths) {
                 AttributePath.resolve(root, p); // validates
                 Selection node = sel;
@@ -74,10 +87,13 @@ public final class EntityJson {
                 if (m.isDirectToFieldMapping()) {
                     json.put(m.getAttributeName(), value(entity.get(m.getAttributeName())));
                 } else if (!m.isCollectionMapping()) {
-                    DynamicEntity target = entity.get(m.getAttributeName());
-                    json.put(m.getAttributeName(), target == null ? null
-                            : depth > 0 ? render(target, m.getReferenceDescriptor(), null, depth - 1)
-                            : reference(target, m.getReferenceDescriptor()));
+                    if (depth > 0) {
+                        DynamicEntity target = entity.get(m.getAttributeName());
+                        json.put(m.getAttributeName(),
+                                target == null ? null : render(target, m.getReferenceDescriptor(), null, depth - 1));
+                    } else {
+                        json.put(m.getAttributeName(), reference(entity, m));
+                    }
                 }
             }
             return json;
@@ -112,12 +128,70 @@ public final class EntityJson {
         return json;
     }
 
-    private Map<String, Object> reference(DynamicEntity target, ClassDescriptor descriptor) {
+    /**
+     * The target's key, as {@code {"id": 7}}, or null. Read from the foreign key in the source row when the
+     * relationship has not been loaded, so a reference never costs a lazy-load query (one per row otherwise).
+     */
+    private Map<String, Object> reference(DynamicEntity entity, DatabaseMapping m) {
+        Map<String, Object> fromRow = foreignKeyReference(m.getAttributeValueFromObject(entity), m);
+        if (fromRow != NOT_AVAILABLE) {
+            return fromRow;
+        }
+        DynamicEntity target = entity.get(m.getAttributeName());
+        if (target == null) {
+            return null;
+        }
         Map<String, Object> ref = new LinkedHashMap<>();
-        for (String key : Mappings.keyAttributes(descriptor)) {
+        for (String key : Mappings.keyAttributes(m.getReferenceDescriptor())) {
             ref.put(key, value(target.get(key)));
         }
         return ref;
+    }
+
+    private static final Map<String, Object> NOT_AVAILABLE = java.util.Collections.unmodifiableMap(new LinkedHashMap<>());
+
+    /** Key of an unloaded to-one target from the held source row; {@link #NOT_AVAILABLE} if it cannot be read. */
+    private static Map<String, Object> foreignKeyReference(Object attributeValue, DatabaseMapping m) {
+        Object holder = attributeValue;
+        while (holder instanceof UnitOfWorkValueHolder<?> uow && !uow.isInstantiated()) {
+            holder = uow.getWrappedValueHolder();
+        }
+        if (!(holder instanceof DatabaseValueHolder<?> vh) || vh.isInstantiated() || vh.getRow() == null
+                || !(m instanceof OneToOneMapping o) || !o.isForeignKeyRelationship()) {
+            return NOT_AVAILABLE;
+        }
+        ClassDescriptor target = m.getReferenceDescriptor();
+        AbstractRecord row = vh.getRow();
+        Map<String, Object> ref = new LinkedHashMap<>();
+        boolean allNull = true;
+        for (Map.Entry<DatabaseField, DatabaseField> e : o.getSourceToTargetKeyFields().entrySet()) {
+            if (!row.containsKey(e.getKey())) {
+                return NOT_AVAILABLE;
+            }
+            DatabaseMapping keyMapping = target.getObjectBuilder().getMappingForField(e.getValue());
+            if (keyMapping == null || !keyMapping.isDirectToFieldMapping()
+                    || !Mappings.isKey(target, keyMapping)) {
+                return NOT_AVAILABLE;
+            }
+            Object raw = row.get(e.getKey());
+            allNull &= raw == null;
+            Class<?> type = Mappings.attributeType(keyMapping);
+            Object converted = raw == null || type == null ? raw
+                    : ConversionManager.getDefaultManager().convertObject(raw, type);
+            ref.put(keyMapping.getAttributeName(), value(converted));
+        }
+        if (allNull) {
+            return null;
+        }
+        // Keys in the target's declared order.
+        Map<String, Object> ordered = new LinkedHashMap<>();
+        for (String key : Mappings.keyAttributes(target)) {
+            if (!ref.containsKey(key)) {
+                return NOT_AVAILABLE;
+            }
+            ordered.put(key, ref.get(key));
+        }
+        return ordered;
     }
 
     /** JSON-friendly value: dates and times as ISO-8601 strings, binary as base64. */

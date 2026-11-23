@@ -1,0 +1,140 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.query;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import jakarta.persistence.EntityManager;
+
+import org.eclipse.persistence.descriptors.ClassDescriptor;
+import org.eclipse.persistence.dynamic.DynamicEntity;
+import org.eclipse.persistence.expressions.Expression;
+import org.eclipse.persistence.expressions.ExpressionBuilder;
+import org.eclipse.persistence.jpa.JpaHelper;
+import org.eclipse.persistence.queries.ReadAllQuery;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.definition.QueryDefinition;
+import io.github.djclarke.eclipselink.mcp.definition.ReportDefinition;
+import io.github.djclarke.eclipselink.mcp.json.EntityJson;
+import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.tools.ToolException;
+
+/**
+ * A named entity query checked against the model at startup (docs/server-definition.md 2.5, 4.3). It runs as a
+ * read-only EclipseLink {@link ReadAllQuery} whose {@link LoadGraph} batch reads every relationship in the
+ * query's graph, so a page costs one statement for the roots plus one per relationship level, never one per
+ * row. Callers supply parameter values and paging only.
+ */
+public final class NamedQuery {
+
+    private final QueryDefinition definition;
+    private final ClassDescriptor root;
+    private final EntityJson.Selection graph;
+    private final LoadGraph loadGraph;
+    private final List<Sort> orderBy;
+
+    private record Sort(AttributePath path, boolean descending) {
+    }
+
+    private NamedQuery(QueryDefinition definition, ClassDescriptor root, EntityJson.Selection graph,
+                       LoadGraph loadGraph, List<Sort> orderBy) {
+        this.definition = definition;
+        this.root = root;
+        this.graph = graph;
+        this.loadGraph = loadGraph;
+        this.orderBy = orderBy;
+    }
+
+    /** Validates the query against the model: root, graph and orderBy paths, parameter types and uses. */
+    public static NamedQuery compile(QueryDefinition def, ModelRuntime model) {
+        String where = "Query '" + def.name() + "': ";
+        ClassDescriptor root = model.entity(def.root());
+        if (root == null) {
+            throw new DefinitionException(where + "unknown root entity '" + def.root() + "'");
+        }
+        try {
+            EntityJson.Selection graph = EntityJson.Selection.parse(root, def.graph());
+            LoadGraph loadGraph = LoadGraph.of(root, def.graph());
+            List<Sort> sorts = new ArrayList<>();
+            for (ReportDefinition.Ordering o : def.orderBy()) {
+                AttributePath p = AttributePath.resolve(root, o.by());
+                if (!p.isBasic() || p.traversesCollection()) {
+                    throw new DefinitionException(where + "orderBy '" + o.by()
+                            + "' must be a basic attribute, not through a to-many relationship");
+                }
+                sorts.add(new Sort(p, o.descending()));
+            }
+            Parameters.checkTypes(def.parameters(), where);
+            NamedQuery query = new NamedQuery(def, root, graph, loadGraph, List.copyOf(sorts));
+            Parameters.UsageCheck check = Parameters.usageCheck(def.parameters(), where);
+            query.buildQuery(check, 1);
+            check.assertAllUsed();
+            return query;
+        } catch (ToolException e) {
+            throw new DefinitionException(where + e.getMessage(), e);
+        }
+    }
+
+    public QueryDefinition definition() {
+        return definition;
+    }
+
+    public ClassDescriptor root() {
+        return root;
+    }
+
+    /** The JSON shape of each item. */
+    public EntityJson.Selection graph() {
+        return graph;
+    }
+
+    /** The relationships batch read for each page. */
+    public LoadGraph loadGraph() {
+        return loadGraph;
+    }
+
+    public Map<String, Object> inputSchema(int maxPageSize) {
+        return Parameters.inputSchema(definition.parameters(), maxPageSize);
+    }
+
+    /** Runs the query; one extra row is fetched to detect another page. */
+    public List<DynamicEntity> run(EntityManager em, Map<String, Object> args, int offset, int limit) {
+        ReadAllQuery q = buildQuery(Parameters.fromArgs(definition.parameters(), args, "query"), limit);
+        List<?> found = JpaHelper.createQuery(q, em).setFirstResult(offset).setMaxResults(limit).getResultList();
+        return found.stream().map(DynamicEntity.class::cast).toList();
+    }
+
+    private ReadAllQuery buildQuery(Filters.ParameterValues params, int batchSize) {
+        ExpressionBuilder eb = new ExpressionBuilder();
+        List<AttributePath> used = new ArrayList<>();
+        Expression where = Filters.toExpression(definition.filter(), root, eb, Set.of(), params, used);
+        ReadAllQuery q = new ReadAllQuery(root.getJavaClass(), eb);
+        if (where != null) {
+            q.setSelectionCriteria(where);
+        }
+        if (used.stream().anyMatch(AttributePath::traversesCollection)) {
+            q.useDistinct();
+        }
+        for (Sort s : orderBy) {
+            Expression e = s.path().toExpression(eb, Set.of());
+            q.addOrdering(s.descending() ? e.descending() : e.ascending());
+        }
+        for (String key : Mappings.keyAttributes(root)) {
+            q.addOrdering(eb.get(key).ascending()); // stable paging
+        }
+        q.setIsReadOnly(true);
+        loadGraph.applyTo(q, eb, Math.max(batchSize, 1));
+        return q;
+    }
+}

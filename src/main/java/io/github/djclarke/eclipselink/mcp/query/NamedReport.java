@@ -9,8 +9,6 @@
  */
 package io.github.djclarke.eclipselink.mcp.query;
 
-import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -42,7 +40,6 @@ import io.github.djclarke.eclipselink.mcp.tools.ToolException;
 public final class NamedReport {
 
     private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max");
-    private static final Set<String> PARAM_TYPES = Set.of("string", "integer", "decimal", "date", "boolean");
 
     private final ReportDefinition definition;
     private final ClassDescriptor root;
@@ -120,29 +117,14 @@ public final class NamedReport {
                     throw new DefinitionException(where + "orderBy '" + o.by() + "' must name a select column");
                 }
             }
-            for (Map.Entry<String, ReportDefinition.Parameter> p : def.parameters().entrySet()) {
-                if (!PARAM_TYPES.contains(p.getValue().type())) {
-                    throw new DefinitionException(where + "parameter '" + p.getKey() + "' has unknown type '"
-                            + p.getValue().type() + "'; use " + PARAM_TYPES);
-                }
-            }
+            Parameters.checkTypes(def.parameters(), where);
 
             NamedReport report = new NamedReport(def, root, outer, List.copyOf(columns));
             // Build the full query once with placeholder values, checking the filter and that every declared
             // parameter is used.
-            Set<String> used = new HashSet<>();
-            report.buildQuery(name -> {
-                if (!def.parameters().containsKey(name)) {
-                    throw new DefinitionException(where + "filter uses undeclared parameter '" + name + "'");
-                }
-                used.add(name);
-                return sample(def.parameters().get(name).type());
-            });
-            for (String declared : def.parameters().keySet()) {
-                if (!used.contains(declared)) {
-                    throw new DefinitionException(where + "parameter '" + declared + "' is declared but not used");
-                }
-            }
+            Parameters.UsageCheck check = Parameters.usageCheck(def.parameters(), where);
+            report.buildQuery(check);
+            check.assertAllUsed();
             return report;
         } catch (ToolException e) {
             throw new DefinitionException(where + e.getMessage(), e);
@@ -159,61 +141,12 @@ public final class NamedReport {
 
     /** JSON Schema for the tool input: the report's parameters plus paging. */
     public Map<String, Object> inputSchema(int maxPageSize) {
-        Map<String, Object> props = new LinkedHashMap<>();
-        List<String> required = new ArrayList<>();
-        for (Map.Entry<String, ReportDefinition.Parameter> e : definition.parameters().entrySet()) {
-            ReportDefinition.Parameter p = e.getValue();
-            Map<String, Object> s = new LinkedHashMap<>();
-            switch (p.type()) {
-                case "integer" -> s.put("type", "integer");
-                case "decimal" -> s.put("type", "number");
-                case "boolean" -> s.put("type", "boolean");
-                case "date" -> {
-                    s.put("type", "string");
-                    s.put("format", "date");
-                }
-                default -> s.put("type", "string");
-            }
-            if (p.description() != null) {
-                s.put("description", p.description());
-            }
-            props.put(e.getKey(), s);
-            if (p.required()) {
-                required.add(e.getKey());
-            }
-        }
-        props.put("pageSize", Map.of("type", "integer", "minimum", 1, "maximum", maxPageSize));
-        props.put("cursor", Map.of("type", "string", "description", "nextCursor from a previous page"));
-        Map<String, Object> schema = new LinkedHashMap<>();
-        schema.put("type", "object");
-        schema.put("properties", props);
-        if (!required.isEmpty()) {
-            schema.put("required", required);
-        }
-        schema.put("additionalProperties", false);
-        return schema;
+        return Parameters.inputSchema(definition.parameters(), maxPageSize);
     }
 
     /** Runs the report. Returns rows of named columns; one extra row is fetched to detect another page. */
     public List<Map<String, Object>> run(EntityManager em, Map<String, Object> args, int offset, int limit) {
-        for (String key : args.keySet()) {
-            if (!definition.parameters().containsKey(key) && !key.equals("pageSize") && !key.equals("cursor")) {
-                throw new ToolException(ToolException.Code.INVALID_PARAMETER,
-                        "Unknown parameter '" + key + "'; this report takes " + definition.parameters().keySet());
-            }
-        }
-        ReportQuery query = buildQuery(name -> {
-            ReportDefinition.Parameter p = definition.parameters().get(name);
-            Object v = args.get(name);
-            if (v == null) {
-                if (p.required()) {
-                    throw new ToolException(ToolException.Code.INVALID_PARAMETER,
-                            "Missing required parameter '" + name + "'");
-                }
-                return Filters.ABSENT;
-            }
-            return typed(name, p.type(), v);
-        });
+        ReportQuery query = buildQuery(Parameters.fromArgs(definition.parameters(), args, "report"));
         List<?> raw = JpaHelper.createQuery(query, em).setFirstResult(offset).setMaxResults(limit).getResultList();
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Object r : raw) {
@@ -260,30 +193,5 @@ public final class NamedReport {
             q.setSelectionCriteria(where);
         }
         return q;
-    }
-
-    private static Object typed(String name, String type, Object v) {
-        try {
-            return switch (type) {
-                case "integer" -> v instanceof Number n ? n.longValue() : Long.parseLong(v.toString());
-                case "decimal" -> new BigDecimal(v.toString());
-                case "date" -> LocalDate.parse(v.toString()).toString();
-                case "boolean" -> v instanceof Boolean b ? b : Boolean.parseBoolean(v.toString());
-                default -> v.toString();
-            };
-        } catch (RuntimeException e) {
-            throw new ToolException(ToolException.Code.INVALID_PARAMETER,
-                    "Parameter '" + name + "' must be a " + type + ", got " + v);
-        }
-    }
-
-    private static Object sample(String type) {
-        return switch (type) {
-            case "integer" -> 0L;
-            case "decimal" -> BigDecimal.ZERO;
-            case "date" -> "2000-01-01";
-            case "boolean" -> Boolean.TRUE;
-            default -> "x";
-        };
     }
 }

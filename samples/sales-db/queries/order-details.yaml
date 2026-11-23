@@ -1,0 +1,23 @@
+name: order_details                 # tool name becomes query_order_details
+title: Order details
+description: "Orders for one customer region, each with its customer and its lines (product name and category)."
+root: Order
+filter:
+  and:
+    - { path: customer.region, op: eq, param: region }
+    - { path: status, op: eq, param: status }
+orderBy: [{ by: orderDate, dir: desc }]
+parameters:
+  region: { type: string, required: true, description: "Customer region: EAST, WEST or NORTH" }
+  status: { type: string, description: "OPEN, SHIPPED or CANCELLED (default: any)" }
+# The graph is both what is loaded (one batch statement per relationship level, per page)
+# and the JSON shape of each item. Keys are always included.
+graph:
+  - orderDate
+  - status
+  - total
+  - customer.name
+  - lines.quantity
+  - lines.price
+  - lines.product.name
+  - lines.product.category
