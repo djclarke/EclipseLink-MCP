@@ -2,12 +2,9 @@
 
 A factory for [MCP](https://modelcontextprotocol.io) servers built on EclipseLink, letting AI agents work with an existing relational database through a mapped object model rather than raw SQL.
 
-Each deployment is a configuration: a database connection and account, a model (introspected from the schema as dynamic entities with no code generation, or an existing persistence unit), named reports and tool settings. The runtime turns that into an MCP server that exposes the model as JSON and XML through MOXy, with typed, relationship-aware tools such as list, describe, find and query.
+Each deployment is a configuration: a database connection and account, a model (generated from the schema as dynamic entities, with no code), named reports and tool settings. The runtime turns that into an MCP server that exposes the model as JSON and XML through MOXy, with typed, relationship-aware tools such as list, describe, find and query.
 
-It comes in two forms:
-
-- **Standalone runtime:** point it at a schema and a config file and get an MCP server, with no code. This is the POC.
-- **Embeddable library:** an application with existing JPA entities adds a dependency and exposes its own model and reports over MCP.
+It is delivered as a **generated, codeless standalone server**: point the runtime at a database and a generated server definition, and you get an MCP server with no code to write. Embedding in existing applications is not planned for now.
 
 A role-based security model (row filters, field visibility and tools per caller) is planned for after the POC.
 
@@ -37,4 +34,4 @@ The standalone runtime, read-only, over a sample schema, with `list_entities`, `
 
 ## License
 
-Eclipse Public License 2.0. See [LICENSE](LICENSE).
+Dual-licensed under the [Eclipse Public License 2.0](https://www.eclipse.org/legal/epl-2.0) or the [Eclipse Distribution License 1.0](https://www.eclipse.org/org/documents/edl-v10.php), the same as EclipseLink (`SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause`). See [LICENSE.md](LICENSE.md) and [NOTICE.md](NOTICE.md).

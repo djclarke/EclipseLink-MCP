@@ -4,16 +4,16 @@ Decisions to make before or during the first prototype. Proposed answers are mar
 
 ## Stack
 
-1. **MCP library:** official MCP Java SDK (`io.modelcontextprotocol.sdk`), or a framework (Spring AI MCP, Quarkus MCP)? *Decided (2026-11-23): the official MCP Java SDK ([modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk)) core module, without Spring, in the library module. It is the reference implementation, tracks the spec (stdio, streamable HTTP, OAuth), and is plain Java, so the library drops into any stack. Spring AI MCP (e.g. a Spring Boot starter) and the Quarkus MCP server extension are possible later adapters, not the base. LangChain4j is mainly client-side and not used.*
+1. **MCP library:** official MCP Java SDK (`io.modelcontextprotocol.sdk`), or a framework (Spring AI MCP, Quarkus MCP)? *Decided (2026-11-23): the official MCP Java SDK ([modelcontextprotocol/java-sdk](https://github.com/modelcontextprotocol/java-sdk)) core module, without Spring, in the runtime. It is the reference implementation, tracks the spec (stdio, streamable HTTP, OAuth), and is plain Java. Spring AI MCP (e.g. a Spring Boot starter) and the Quarkus MCP server extension are possible later adapters, not the base. LangChain4j is mainly client-side and not used.*
 2. **Java and build:** *Proposed: Java 21, Maven.*
 3. **EclipseLink version:** build on released 5.0.x, or track 6.0.0-SNAPSHOT? Does the prototype need anything only in 6.0?
 4. **Transport for milestone 1:** stdio only, or streamable HTTP too? OAuth needs HTTP. *Proposed: stdio first with roles from config, HTTP + OAuth in milestone 2.*
-4a. **Module layout:** one Maven module, or a core library module plus a thin standalone launcher module (see requirements 2)? *Proposed: two modules from the start, so the embeddable library stays free of launcher and config-file concerns.*
+4a. **Module layout:** one Maven module, or a core module plus a launcher module? *Proposed: one module for the POC, now that there is no embeddable library (requirements 2); keep model building, binding and tools in separate packages so a split stays easy.*
 
 ## Model
 
 5. **Sample database:** which schema? Options: a small HR/Orders schema written for this repo, Sakila (MySQL sample), Chinook, or Oracle HR. *Proposed: a small Orders/Customers/Products schema on H2 or Derby so tests are self-contained.*
-6. **Model source:** introspection only, or also support existing persistence units with static entities from the start?
+6. **Model source:** introspection only, or also existing persistence units with static entities? *Decided: generated dynamic entities only (codeless).*
 7. **Override format:** `eclipselink-orm.xml`, or a simpler YAML/JSON model config that the server turns into mappings?
 8. **Naming:** how to derive entity/attribute names from table/column names (camel case, singularization)?
 
