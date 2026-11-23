@@ -1,0 +1,88 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp;
+
+import java.io.PrintStream;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.json.JsonMapper;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
+import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.tools.Json;
+import io.github.djclarke.eclipselink.mcp.tools.ToolException;
+import io.github.djclarke.eclipselink.mcp.tools.ToolService;
+
+/**
+ * {@code eclipselink-mcp call}: runs one tool of a definition and prints the JSON an agent would receive, without
+ * an MCP client. The design-time skill uses it to show the effect of each change (requirements FR-28).
+ */
+public final class CallCommand {
+
+    private final Function<String, String> environment;
+    private final PrintStream out;
+    private final PrintStream err;
+
+    public CallCommand(Function<String, String> environment, PrintStream out, PrintStream err) {
+        this.environment = environment;
+        this.out = out;
+        this.err = err;
+    }
+
+    /** @return the process exit code */
+    public int run(String[] args) {
+        Path definition = null;
+        Path drivers = null;
+        List<String> rest = new ArrayList<>();
+        for (int i = 0; i < args.length; i++) {
+            switch (args[i]) {
+                case "--definition" -> definition = i + 1 < args.length ? Path.of(args[++i]) : null;
+                case "--drivers" -> drivers = i + 1 < args.length ? Path.of(args[++i]) : null;
+                default -> rest.add(args[i]);
+            }
+        }
+        if (definition == null || rest.isEmpty() || rest.size() > 2) {
+            err.println("Usage: java -jar eclipselink-mcp-server.jar call --definition <dir> [--drivers <dir>] "
+                    + "<tool> ['<json arguments>']");
+            return 2;
+        }
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        if (rest.size() == 2) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> parsed = JsonMapper.builder().build().readValue(rest.get(1), Map.class);
+                arguments.putAll(parsed);
+            } catch (JacksonException e) {
+                err.println("Arguments must be a JSON object: " + e.getOriginalMessage());
+                return 2;
+            }
+        }
+        try (ModelRuntime model = ModelRuntime.start(new DefinitionLoader(environment).load(definition), drivers)) {
+            ToolService tools = new ToolService(model);
+            try {
+                out.println(Json.writePretty(tools.call(rest.get(0), arguments)));
+                return 0;
+            } catch (ToolException e) {
+                out.println(Json.writePretty(Map.of("error", Map.of("code", e.code().name(), "message", e.getMessage()))));
+                return 1;
+            }
+        } catch (DefinitionException e) {
+            err.println("Invalid server definition: " + e.getMessage());
+            return 1;
+        }
+    }
+}

@@ -116,6 +116,7 @@ The repo ships its own Claude skills for working with the factory. They double a
   - **Validate and troubleshoot:** explain startup failures, mapping mismatches and invalid reports.
 - FR-25: Self-contained (decided 2026-11-23). The skills live in this repo and do not depend on the EclipseLink-JPA-skills repo. Shared material can be factored out later if that proves useful.
 - FR-26: Timing. Skills are written once the POC config format settles, so they do not churn with it.
+- First skill (2026-11-23): `skills/configure-server-from-schema`. It chooses tables precisely, runs `init`, simplifies the model with `edit`, then helps write named queries and reports, checking each step with `call`. It covers the "author named reports" task too.
 
 ### 4.8 Design-time workflow
 
@@ -136,6 +137,7 @@ The work splits into **design time** and **run time**. At design time, the skill
 - FR-38: Deterministic generator. A command (`init`) reads JDBC metadata and writes a starter definition (descriptor, ORM XML with relationships from foreign keys, default JSON), which the skill then refines. The skill never writes mappings freehand.
 - FR-39: Precise table selection for large databases. Nothing is scanned by default. Tables are chosen by exact names, include and exclude patterns (glob or regex), schema and catalog, table types, and foreign key expansion from seed tables to a depth limit, with a cap on the table count. The selection is a reusable file as well as command line flags (server-definition 7.2).
 - FR-40: Scoped metadata reads. Metadata is read only for selected tables, and table lookups are pushed to the database where possible (server-definition 7.3).
+- FR-41: Validated model edits. After generation, the model is changed only through edit operations (rename, remove, unlink, describe), which keep mappings consistent. Each one is validated against the database and rolled back on failure (server-definition 7.5).
 
 ### 4.9 Named queries and load graphs
 

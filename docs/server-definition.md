@@ -569,6 +569,35 @@ Column, key and foreign key metadata is never read for tables outside the select
 
 The round-trip test generates a definition from the sample database with `include: ["*"]` and starts it. It then checks that the generated server returns the same items as the hand-written sample for `query_entities`, `find_entity` and a select through a one-to-many.
 
+### 7.5 Refining the model: `edit` and `call`
+
+After `init`, the design-time skill simplifies the model with the user. A typical session renames entities, drops reverse one-to-many relationships nobody navigates, trims columns and adds descriptions. It then defines named queries (2.5) and named reports (2.4). Model changes go through `edit`, so mappings are never edited as text:
+
+```
+java -jar eclipselink-mcp-server.jar edit --definition <dir> [--drivers <dir>] <operation>
+```
+
+| Operation | Effect |
+|---|---|
+| `rename-entity <Entity> <New>` | Renames the entity, updates every `target-entity`, and updates `root:` in report and query files |
+| `rename-attribute <Entity> <attr> <new>` | Renames an attribute. Renaming an owning relationship also updates the inverse's `mapped-by` |
+| `remove-attribute <Entity> <attr>... [--with-inverse]` | Removes attributes. Keys cannot be removed. An owning relationship with an inverse needs the inverse removed first, or `--with-inverse` |
+| `unlink <Entity> <relationship>` | Replaces a to-one relationship with its foreign key column(s) as basic attributes (`product` → `productId`) and removes its inverse |
+| `remove-entity <Entity>` | Removes an entity. To-one references to it are unlinked, and to-many references are removed |
+| `describe <Entity>[.<attr>] <text>` | Sets or replaces `mcp.description`. Empty text removes it |
+
+Every edit is **validated and atomic**. The change is written, and then the whole definition is loaded and started against the database, reports and queries included. If anything fails, the ORM file and every report and query file are restored, and the error is printed ("Edit not applied: Report 'by_region': ... region"). A definition is therefore never left broken. One consequence is that renaming or removing an attribute that a report or query uses is refused until that YAML is updated. The skill therefore simplifies the model before writing reports and queries.
+
+Edits keep comments and layout outside the elements they change. The XML serializer does not keep the order of attributes within an element.
+
+To show the user what agents will see after each step (FR-28), `call` runs one tool of a definition and prints its JSON result, with no MCP client:
+
+```
+java -jar eclipselink-mcp-server.jar call --definition <dir> query_order_details '{"region":"EAST","pageSize":2}'
+```
+
+The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
+
 ## 8. Open decisions in this spec
 
 1. Descriptor format: YAML (proposed) or JSON.

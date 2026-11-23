@@ -11,11 +11,13 @@ package io.github.djclarke.eclipselink.mcp;
 
 import java.io.PrintStream;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
 import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
 import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
 import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
+import io.github.djclarke.eclipselink.mcp.edit.EditCommand;
 import io.github.djclarke.eclipselink.mcp.generate.InitCommand;
 import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
 import io.github.djclarke.eclipselink.mcp.tools.ToolService;
@@ -29,6 +31,8 @@ import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
  * <pre>
  * java -jar eclipselink-mcp-server.jar --definition &lt;dir&gt; [--drivers &lt;dir&gt;] [--validate]
  * java -jar eclipselink-mcp-server.jar init --url &lt;jdbc-url&gt; --out &lt;dir&gt; [selection options]
+ * java -jar eclipselink-mcp-server.jar edit --definition &lt;dir&gt; &lt;operation&gt; ...
+ * java -jar eclipselink-mcp-server.jar call --definition &lt;dir&gt; &lt;tool&gt; ['&lt;json&gt;']
  * </pre>
  *
  * stdout carries MCP messages, so everything else (logs, errors) goes to stderr.
@@ -39,8 +43,14 @@ public final class Main {
     }
 
     public static void main(String[] args) {
-        if (args.length > 0 && args[0].equals("init")) {
-            int code = new InitCommand(System::getenv, System.out).run(java.util.Arrays.copyOfRange(args, 1, args.length));
+        if (args.length > 0 && List.of("init", "edit", "call").contains(args[0])) {
+            String[] rest = java.util.Arrays.copyOfRange(args, 1, args.length);
+            configureLogging("warn");
+            int code = switch (args[0]) {
+                case "init" -> new InitCommand(System::getenv, System.out).run(rest);
+                case "edit" -> new EditCommand(System::getenv, System.out, System.err).run(rest);
+                default -> new CallCommand(System::getenv, System.out, System.err).run(rest);
+            };
             if (code != 0) {
                 System.exit(code);
             }
@@ -138,6 +148,7 @@ public final class Main {
         out.println("  --definition <dir>  server definition directory (contains eclipselink-mcp.yaml)");
         out.println("  --drivers <dir>     JDBC driver JARs to load (default: connection.drivers, or <definition>/drivers)");
         out.println("  --validate          load and check the definition against the database, then exit");
-        out.println("Generate a starter definition from selected tables: ... init --help");
+        out.println("Design time: init (generate from tables), edit (change the model), call (run one tool):");
+        out.println("  ... init --help | edit --help | call --definition <dir> <tool> '<json>'");
     }
 }

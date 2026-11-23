@@ -92,6 +92,17 @@ DB_PW=reader java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar init \
 
 It never scans a whole database unless asked (`--include '*'`). Tables come from names, glob or regex patterns, schemas, table types and foreign key expansion, on the command line or in a `selection.yaml`. See [spec section 7](docs/server-definition.md#7-generating-a-starter-definition-init).
 
+### Refine it, with or without the skill
+
+`edit` makes validated model changes (rename, remove, unlink, describe), and `call` prints the JSON a tool returns:
+
+```sh
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar edit --definition /tmp/sales-gen rename-entity Orders Order
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar call --definition /tmp/sales-gen find_entity '{"entity":"Order","id":1001}'
+```
+
+The Claude skill [`skills/configure-server-from-schema`](skills/configure-server-from-schema/SKILL.md) drives the whole loop with you: table selection, `init`, simplification, then named queries and reports. To use it, copy the folder to `~/.claude/skills/` or to a project's `.claude/skills/`.
+
 ### What the POC serves
 
 The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, two named reports and one named query. From that the server exposes:
@@ -103,7 +114,7 @@ The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an
 
 ### Not in the POC yet
 
-Compared with [the spec](docs/server-definition.md): JSON is produced from the EclipseLink mappings directly, with the default shape, not yet through MOXy bindings (so `model.bindings` overrides are rejected); no prompts or completions; no `model.schema`; paging cursors are offsets; no HTTP transport; no design-time skills yet (the sample ORM XML is hand-written; `init` generates a starter one).
+Compared with [the spec](docs/server-definition.md): JSON is produced from the EclipseLink mappings directly, with the default shape, not yet through MOXy bindings (so `model.bindings` overrides are rejected); no prompts or completions; no `model.schema`; paging cursors are offsets; no HTTP transport; only the first design-time skill (the sample ORM XML is hand-written; `init` generates a starter one).
 
 ## Stack
 
