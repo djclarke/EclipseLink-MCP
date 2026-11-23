@@ -100,7 +100,8 @@ Consequences:
 - Model building should only see what the account can see: introspection runs as that account, so tables it cannot read do not become entities.
 - Tool exposure (SR-3) still applies, so a read-only deployment never offers write tools even if the account could write.
 - This holds with the internal connection pool (NFR-6) because every pooled connection uses the one account, which matches the single caller in milestone 1.
-- It stops holding once a server instance serves several callers with different permissions. Options then are: one server instance (and account) per permission set; per-caller database identity on each EntityManager (EclipseLink exclusive connections with per-session credentials, or Oracle proxy authentication over the shared pool); or the in-app policy layer in 5.2 to 5.4 over one shared account. The choice is open question 13a.
+- Decided (2026-11-23): this carries into the HTTP, multi-user milestone. The server uses **one shared database account**, and **any authenticated MCP user can read whatever that account can access**. Authentication (SR-1) decides who may connect at all; it does not narrow what they can read.
+- Deferred: per-caller access (separate database identity per caller via EclipseLink exclusive connections or Oracle proxy authentication, or the in-app policy layer in 5.2 to 5.4). Deployments that need different permission sets run separate server instances with separate accounts until then.
 
 ### 5.1 Identity
 

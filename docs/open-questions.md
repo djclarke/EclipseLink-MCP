@@ -24,7 +24,7 @@ Decisions to make before or during the first prototype. Proposed answers are mar
 12. **Audit sink:** log file, database table, or OpenTelemetry?
 13. **Connection pooling:** EclipseLink's internal pool, or an external `DataSource` such as HikariCP? *Decided: internal pool for milestone 1, with a config switch to an external `DataSource` for the HTTP/multi-user milestone (see NFR-6).*
 
-13a. **Multi-caller database identity:** when one server serves callers with different permissions, do we run one instance per permission set, map each caller to its own database identity (exclusive connections or Oracle proxy authentication), or enforce the in-app policy layer over one shared account? *Milestone 1 assumes the connected database user has the same permissions as the MCP client (requirements 5.0), so this can wait for the HTTP milestone.*
+13a. **Multi-caller database identity:** when one server serves callers with different permissions, do we run one instance per permission set, map each caller to its own database identity (exclusive connections or Oracle proxy authentication), or enforce the in-app policy layer over one shared account? *Decided for now: one shared account, and any authenticated user can read whatever that account can access (requirements 5.0). Per-caller identity or policy is deferred.*
 
 ## Scope
 
