@@ -129,6 +129,8 @@ The work splits into **design time** and **run time**. At design time, the skill
   - MOXy bindings (e.g. `eclipselink-oxm.json` or `.xml`) for the JSON shape;
   - the named report definitions (4.5);
   - a small deployment config naming the connection, the files above and tool settings.
+
+  The layout, formats, packaging, hosting and MCP surface of these files are specified in [server-definition.md](server-definition.md).
 - FR-31: Stay inside the account. The schema scan runs as the shared database account (5.0) and only sees what that account can read.
 - FR-32: Re-entrant. The session can reopen existing files to add tables or reports later, rather than starting over.
 

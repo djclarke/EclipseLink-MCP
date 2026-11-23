@@ -22,6 +22,7 @@ A role-based security model (row filters, field visibility and tools per caller)
 Requirements phase. See:
 
 - [docs/requirements.md](docs/requirements.md) for goals, scope and functional/security requirements
+- [docs/server-definition.md](docs/server-definition.md) for the server definition: packaging, hosting and the full MCP surface (tools, resources, prompts)
 - [docs/open-questions.md](docs/open-questions.md) for decisions still to make
 
 ## First milestone: POC
