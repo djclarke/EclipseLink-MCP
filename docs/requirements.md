@@ -131,6 +131,7 @@ claims:
 - NFR-3: Works with common databases (Derby/H2 for the sample, then PostgreSQL, MySQL, Oracle).
 - NFR-4: Startup on a schema of ~200 tables in under 10 seconds (target, to verify).
 - NFR-5: Integration tests run against an embedded sample database with fixed seed data, including tests that prove each role cannot see filtered rows or fields.
+- NFR-6: Connection pooling. *Proposed decision:* use EclipseLink's internal connection pool for milestone 1 (stdio, single caller, H2, read-only), configured through persistence unit properties (`eclipselink.connection-pool.*`). Keep a config switch to use an external `DataSource` instead (e.g. HikariCP, or a container/JNDI pool) for the HTTP, multi-user milestone. Either way, per-caller security comes from EntityManager properties, not separate database connections or credentials per caller (unless VPD push-down needs connection-level context, see SR-7).
 
 ## 7. Risks
 
