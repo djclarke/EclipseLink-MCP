@@ -186,7 +186,11 @@ public final class DefinitionGenerator {
                 String name = unique(lowerCamel(c.name()), taken, "Value");
                 StringBuilder xml = new StringBuilder("            <").append(key ? "id" : "basic")
                         .append(" name=\"").append(name).append("\" attribute-type=\"").append(type).append("\">");
-                xml.append("<column name=\"").append(esc(c.name())).append("\"/>");
+                xml.append("<column name=\"").append(esc(c.name())).append('"');
+                if (type.equals("java.math.BigDecimal") && c.size() > 0) {
+                    xml.append(" precision=\"").append(c.size()).append("\" scale=\"").append(c.scale()).append('"');
+                }
+                xml.append("/>");
                 if (c.remarks() != null) {
                     xml.append("\n                <property name=\"mcp.description\" value=\"").append(esc(c.remarks()))
                             .append("\"/>\n            ");
@@ -248,6 +252,7 @@ public final class DefinitionGenerator {
             case Types.TIME -> "java.time.LocalTime";
             case Types.TIMESTAMP -> "java.time.LocalDateTime";
             case Types.TIMESTAMP_WITH_TIMEZONE -> "java.time.OffsetDateTime";
+            case Types.TIME_WITH_TIMEZONE -> "java.time.OffsetTime";
             case Types.BINARY, Types.VARBINARY, Types.LONGVARBINARY, Types.BLOB -> "byte[]";
             default -> null;
         };

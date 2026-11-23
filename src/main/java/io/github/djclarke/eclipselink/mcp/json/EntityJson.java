@@ -9,6 +9,7 @@
  */
 package io.github.djclarke.eclipselink.mcp.json;
 
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -194,25 +195,66 @@ public final class EntityJson {
         return ordered;
     }
 
-    /** JSON-friendly value: dates and times as ISO-8601 strings, binary as base64. */
+    /**
+     * The JSON value of a basic attribute, by the fixed type contract (docs/server-definition.md 4.2.1): exact
+     * decimals as plain-notation strings, as stored; floating point as numbers (non-finite values as strings);
+     * dates and times as ISO-8601 strings, seconds always shown, offsets kept for zoned types; binary as base64.
+     */
     public static Object value(Object v) {
-        if (v == null || v instanceof String || v instanceof Number || v instanceof Boolean) {
+        if (v == null || v instanceof String || v instanceof Boolean || v instanceof Integer || v instanceof Long
+                || v instanceof Short || v instanceof Byte || v instanceof java.math.BigInteger) {
             return v;
         }
-        if (v instanceof TemporalAccessor) {
-            return v.toString();
+        if (v instanceof java.math.BigDecimal d) {
+            return d.toPlainString();
+        }
+        if (v instanceof Double d) {
+            return d.isNaN() || d.isInfinite() ? d.toString() : d;
+        }
+        if (v instanceof Float f) {
+            return f.isNaN() || f.isInfinite() ? f.toString() : f;
+        }
+        if (v instanceof Number n) {
+            return n;
+        }
+        if (v instanceof java.time.LocalDate d) {
+            return d.toString();
+        }
+        if (v instanceof java.time.LocalDateTime t) {
+            return DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(t);
+        }
+        if (v instanceof java.time.LocalTime t) {
+            return DateTimeFormatter.ISO_LOCAL_TIME.format(t);
+        }
+        if (v instanceof java.time.OffsetDateTime t) {
+            return DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(t);
+        }
+        if (v instanceof java.time.ZonedDateTime t) {
+            return DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(t);
+        }
+        if (v instanceof java.time.OffsetTime t) {
+            return DateTimeFormatter.ISO_OFFSET_TIME.format(t);
+        }
+        if (v instanceof java.time.Instant i) {
+            return DateTimeFormatter.ISO_INSTANT.format(i);
         }
         if (v instanceof java.sql.Date d) {
             return d.toLocalDate().toString();
         }
         if (v instanceof java.sql.Timestamp t) {
-            return t.toLocalDateTime().toString();
+            return DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(t.toLocalDateTime());
+        }
+        if (v instanceof java.sql.Time t) {
+            return DateTimeFormatter.ISO_LOCAL_TIME.format(t.toLocalTime());
         }
         if (v instanceof java.util.Date d) {
-            return d.toInstant().toString();
+            return DateTimeFormatter.ISO_INSTANT.format(d.toInstant());
         }
         if (v instanceof byte[] b) {
             return Base64.getEncoder().encodeToString(b);
+        }
+        if (v instanceof TemporalAccessor) {
+            return v.toString();
         }
         return v.toString();
     }

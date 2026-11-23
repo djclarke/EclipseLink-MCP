@@ -77,12 +77,12 @@ class DefinitionLoaderTest {
                 name: bad
                 root: Order
                 select:
-                  - { path: customer.creditLimit, as: limit }
+                  - { path: customer.salary, as: limit }
                 """);
         ServerDefinition def = new DefinitionLoader(TestDatabase.environment()).load(dir);
         try (ModelRuntime runtime = ModelRuntime.start(def)) {
             DefinitionException e = assertThrows(DefinitionException.class, () -> new ToolService(runtime));
-            assertTrue(e.getMessage().contains("Report 'bad'") && e.getMessage().contains("creditLimit"),
+            assertTrue(e.getMessage().contains("Report 'bad'") && e.getMessage().contains("salary"),
                     e.getMessage());
         }
     }

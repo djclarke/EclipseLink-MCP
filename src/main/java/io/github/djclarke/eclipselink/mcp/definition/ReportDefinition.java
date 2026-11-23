@@ -58,7 +58,7 @@ public record ReportDefinition(
     }
 
     /**
-     * @param type one of string, integer, decimal, date, boolean
+     * @param type one of string, integer, decimal, date, timestamp, timestamptz, boolean (docs 4.2.1)
      */
     public record Parameter(String type, Boolean required, String description) {
         public Parameter {

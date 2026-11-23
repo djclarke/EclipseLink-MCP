@@ -100,9 +100,13 @@ public final class NamedReport {
                 Map<String, Object> schema = switch (agg == null ? "" : agg) {
                     case "count" -> Map.of("type", "integer");
                     case "avg" -> Map.of("type", "number");
-                    case "sum" -> Mappings.jsonSchema(p.type()).get("type").equals("integer")
-                            ? Map.of("type", "integer") : Map.of("type", "number");
-                    default -> Mappings.jsonSchema(p.type());
+                    // A sum keeps its operand's kind: integers, exact decimals (strings) or floating point.
+                    case "sum" -> {
+                        Map<String, Object> base = Mappings.jsonSchema(p.type());
+                        yield base.get("type").equals("integer") || "decimal".equals(base.get("format"))
+                                ? base : Map.of("type", "number");
+                    }
+                    default -> Mappings.jsonSchema(p.last());
                 };
                 columns.add(new OutputColumn(c.as(), schema, p, agg));
             }

@@ -224,12 +224,19 @@ public final class ToolService {
             if (m.isDirectToFieldMapping()) {
                 Map<String, Object> a = new LinkedHashMap<>();
                 a.put("name", m.getAttributeName());
-                a.put("type", Mappings.typeName(Mappings.attributeType(m)));
+                Class<?> javaType = Mappings.attributeType(m);
+                a.put("type", Mappings.typeName(javaType));
+                Map<String, Object> schema = Mappings.jsonSchema(m);
+                putIfNotNull(a, "scale", schema.get("scale"));
+                putIfNotNull(a, "example", Mappings.example(javaType));
+                if ("local-date-time".equals(schema.get("format")) || "local-time".equals(schema.get("format"))) {
+                    a.put("timeZone", "none: the value as stored in the database");
+                }
                 a.put("key", Mappings.isKey(d, m));
                 a.put("nullable", m.getField() != null && m.getField().isNullable() && !Mappings.isKey(d, m));
                 putIfNotNull(a, "description", Mappings.description(m));
                 attributes.add(a);
-                Map<String, Object> s = new LinkedHashMap<>(Mappings.jsonSchema(Mappings.attributeType(m)));
+                Map<String, Object> s = new LinkedHashMap<>(schema);
                 putIfNotNull(s, "description", Mappings.description(m));
                 props.put(m.getAttributeName(), s);
             } else {
