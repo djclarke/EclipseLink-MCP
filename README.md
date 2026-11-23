@@ -34,4 +34,4 @@ The standalone runtime, read-only, over a sample schema, with `list_entities`, `
 
 ## License
 
-Eclipse Public License 2.0. See [LICENSE](LICENSE).
+Dual-licensed under the [Eclipse Public License 2.0](https://www.eclipse.org/legal/epl-2.0) or the [Eclipse Distribution License 1.0](https://www.eclipse.org/org/documents/edl-v10.php), the same as EclipseLink (`SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause`). See [LICENSE.md](LICENSE.md) and [NOTICE.md](NOTICE.md).
