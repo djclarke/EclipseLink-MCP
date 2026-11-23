@@ -1,0 +1,163 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.query;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.definition.ReportDefinition.Parameter;
+import io.github.djclarke.eclipselink.mcp.tools.ToolException;
+
+/** Typed parameters shared by named reports and named queries: validation, input schema and values. */
+final class Parameters {
+
+    static final Set<String> TYPES = Set.of("string", "integer", "decimal", "date", "boolean");
+    private static final Set<String> PAGING = Set.of("pageSize", "cursor");
+
+    private Parameters() {
+    }
+
+    /** Checks parameter types at startup. */
+    static void checkTypes(Map<String, Parameter> params, String where) {
+        for (Map.Entry<String, Parameter> p : params.entrySet()) {
+            if (!TYPES.contains(p.getValue().type())) {
+                throw new DefinitionException(where + "parameter '" + p.getKey() + "' has unknown type '"
+                        + p.getValue().type() + "'; use " + TYPES);
+            }
+        }
+    }
+
+    /**
+     * Supplies sample values while a query is built once at startup, failing on an undeclared parameter.
+     * Call {@link UsageCheck#assertAllUsed()} afterwards.
+     */
+    static UsageCheck usageCheck(Map<String, Parameter> params, String where) {
+        return new UsageCheck(params, where);
+    }
+
+    static final class UsageCheck implements Filters.ParameterValues {
+        private final Map<String, Parameter> params;
+        private final String where;
+        private final Set<String> used = new HashSet<>();
+
+        private UsageCheck(Map<String, Parameter> params, String where) {
+            this.params = params;
+            this.where = where;
+        }
+
+        @Override
+        public Object value(String name) {
+            if (!params.containsKey(name)) {
+                throw new DefinitionException(where + "filter uses undeclared parameter '" + name + "'");
+            }
+            used.add(name);
+            return sample(params.get(name).type());
+        }
+
+        void assertAllUsed() {
+            for (String declared : params.keySet()) {
+                if (!used.contains(declared)) {
+                    throw new DefinitionException(where + "parameter '" + declared + "' is declared but not used");
+                }
+            }
+        }
+    }
+
+    /** Values from tool arguments: rejects unknown arguments and missing required ones, converts types. */
+    static Filters.ParameterValues fromArgs(Map<String, Parameter> params, Map<String, Object> args, String what) {
+        for (String key : args.keySet()) {
+            if (!params.containsKey(key) && !PAGING.contains(key)) {
+                throw new ToolException(ToolException.Code.INVALID_PARAMETER,
+                        "Unknown parameter '" + key + "'; this " + what + " takes " + params.keySet());
+            }
+        }
+        return name -> {
+            Parameter p = params.get(name);
+            Object v = args.get(name);
+            if (v == null) {
+                if (p.required()) {
+                    throw new ToolException(ToolException.Code.INVALID_PARAMETER,
+                            "Missing required parameter '" + name + "'");
+                }
+                return Filters.ABSENT;
+            }
+            return typed(name, p.type(), v);
+        };
+    }
+
+    /** JSON Schema for a tool input: the parameters plus paging. */
+    static Map<String, Object> inputSchema(Map<String, Parameter> params, int maxPageSize) {
+        Map<String, Object> props = new LinkedHashMap<>();
+        List<String> required = new ArrayList<>();
+        for (Map.Entry<String, Parameter> e : params.entrySet()) {
+            Parameter p = e.getValue();
+            Map<String, Object> s = new LinkedHashMap<>();
+            switch (p.type()) {
+                case "integer" -> s.put("type", "integer");
+                case "decimal" -> s.put("type", "number");
+                case "boolean" -> s.put("type", "boolean");
+                case "date" -> {
+                    s.put("type", "string");
+                    s.put("format", "date");
+                }
+                default -> s.put("type", "string");
+            }
+            if (p.description() != null) {
+                s.put("description", p.description());
+            }
+            props.put(e.getKey(), s);
+            if (p.required()) {
+                required.add(e.getKey());
+            }
+        }
+        props.put("pageSize", Map.of("type", "integer", "minimum", 1, "maximum", maxPageSize));
+        props.put("cursor", Map.of("type", "string", "description", "nextCursor from a previous page"));
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", props);
+        if (!required.isEmpty()) {
+            schema.put("required", required);
+        }
+        schema.put("additionalProperties", false);
+        return schema;
+    }
+
+    private static Object typed(String name, String type, Object v) {
+        try {
+            return switch (type) {
+                case "integer" -> v instanceof Number n ? n.longValue() : Long.parseLong(v.toString());
+                case "decimal" -> new BigDecimal(v.toString());
+                case "date" -> LocalDate.parse(v.toString()).toString();
+                case "boolean" -> v instanceof Boolean b ? b : Boolean.parseBoolean(v.toString());
+                default -> v.toString();
+            };
+        } catch (RuntimeException e) {
+            throw new ToolException(ToolException.Code.INVALID_PARAMETER,
+                    "Parameter '" + name + "' must be a " + type + ", got " + v);
+        }
+    }
+
+    private static Object sample(String type) {
+        return switch (type) {
+            case "integer" -> 0L;
+            case "decimal" -> BigDecimal.ZERO;
+            case "date" -> "2000-01-01";
+            case "boolean" -> Boolean.TRUE;
+            default -> "x";
+        };
+    }
+}

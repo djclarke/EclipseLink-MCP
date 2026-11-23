@@ -68,12 +68,25 @@ Claude Desktop / Claude Code (`mcpServers`):
 }
 ```
 
+### JDBC drivers
+
+Only the H2 driver is bundled in the runtime JAR. For any other database, put its driver JAR in a `drivers/` folder inside the server definition, point `connection.drivers` in the descriptor at a directory, or pass `--drivers <dir>` on the command line (it wins over both). See [server definition 3.3](docs/server-definition.md#33-jdbc-drivers).
+
+```sh
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar --definition ./hr-db --drivers ~/jdbc/postgresql
+```
+
+### Credentials
+
+The definition never holds a password. It refers to one: `${env:SALES_DB_PASSWORD}`, or `${file:/run/secrets/sales-db-password}` for a mounted secret. A literal password fails validation. Other sources, such as an OS keychain or a cloud secret manager, are planned as optional resolver plugins. See [spec 5.3](docs/server-definition.md#53-secrets-and-credentials) and the [roadmap](docs/roadmap.md).
+
 ### What the POC serves
 
-The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, and two named reports. From that the server exposes:
+The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, two named reports and one named query. From that the server exposes:
 
-- tools `list_entities`, `describe_entity`, `find_entity`, `query_entities` (structured filters, select paths, sorting, paging, optional count), and `report_sales_by_region` and `report_open_orders_by_customer` (EclipseLink `ReportQuery`, parameters and paging only);
-- resources `eclipselink://model`, `eclipselink://entity/{name}` and `eclipselink://report/{name}`;
+- tools `list_entities`, `describe_entity`, `find_entity`, `query_entities` (structured filters, select paths, sorting, paging, optional count), and `report_sales_by_region` and `report_open_orders_by_customer` (EclipseLink `ReportQuery`, parameters and paging only), and `query_order_details` (orders with their customer and lines, loaded and shaped by the query's `graph`);
+- related data loaded by IN batch reads, one statement per relationship level per page, and to-one references read from foreign keys with no lazy loads ([spec 4.8](docs/server-definition.md#48-loading-related-data-and-json-shapes));
+- resources `eclipselink://model`, `eclipselink://entity/{name}`, `eclipselink://report/{name}` and `eclipselink://query/{name}`;
 - generated server instructions, read-only tool annotations, agent-facing error codes and an audit log line per call (stderr).
 
 ### Not in the POC yet

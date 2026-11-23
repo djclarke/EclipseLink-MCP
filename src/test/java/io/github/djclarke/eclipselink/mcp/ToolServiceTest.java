@@ -48,7 +48,7 @@ class ToolServiceTest {
     @Test
     void exposesReadOnlyToolsAndOneToolPerReport() {
         assertEquals(List.of("list_entities", "describe_entity", "find_entity", "query_entities",
-                        "report_open_orders_by_customer", "report_sales_by_region"),
+                        "report_open_orders_by_customer", "report_sales_by_region", "query_order_details"),
                 tools.tools().stream().map(ToolService.Tool::name).toList());
     }
 

@@ -104,6 +104,7 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 - **Composite definitions:** one model spanning several databases through EclipseLink composite persistence units (SessionBroker), with relationships between member units. Constraints: a single query cannot join across databases, so `query_entities` and named reports run against one member, or results are merged in memory with strict limits; writes across members would need JTA two-phase commit. Read-only use fits first.
 - Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
 - Change notifications as MCP resource subscriptions.
+- **Credential sources:** OS keychain, cloud secret managers (AWS, Azure, GCP, OCI, HashiCorp Vault) and token-based database login, as optional resolver plugins (server-definition 5.3, [roadmap](roadmap.md)).
 
 ### 4.7 Claude skills
 
@@ -126,12 +127,22 @@ The work splits into **design time** and **run time**. At design time, the skill
 - FR-30: Save the outcome as files. The session writes reviewable files that are versioned in git and loaded by the runtime, so the same files always produce the same server:
   - `eclipselink-orm.xml` for the dynamic entities and their mappings;
   - MOXy bindings (e.g. `eclipselink-oxm.json` or `.xml`) for the JSON shape;
-  - the named report definitions (4.5);
+  - the named report definitions (4.5) and named query definitions (4.9);
   - a small deployment config naming the connection, the files above and tool settings.
 
   The layout, formats, packaging, hosting and MCP surface of these files are specified in [server-definition.md](server-definition.md).
 - FR-31: Stay inside the account. The schema scan runs as the shared database account (5.0) and only sees what that account can read.
 - FR-32: Re-entrant. The session can reopen existing files to add tables or reports later, rather than starting over.
+
+### 4.9 Named queries and load graphs
+
+Agents often need an entity with some of its related data: an order with its customer and lines. The relationships are lazy, and each use case needs a different part of the graph. Loading it one lazy load at a time costs a statement per row per relationship.
+
+- FR-33: The data owner defines named entity queries: a root entity, a fixed filter with typed parameters, a sort, and a **graph** of attribute paths. Each is its own MCP tool (`query_<name>`) taking parameters and paging only.
+- FR-34: The graph is the load plan. Every relationship in it is batch read, so a page costs one statement for the roots plus one per relationship level, independent of page size. The same applies to `select` paths and `depth` on the generic entity tools.
+- FR-35: The graph is also the JSON shape. Several use cases can return different shapes of the same entities without changing the model: one ORM mapping and one persistence unit, many read-only shapes.
+- FR-36: To-one relationships outside the graph are returned as references read from the foreign key, never by a lazy load.
+- FR-37: Per-use-case MOXy shapes are read-only. Object graphs over the shared bindings are the default; a separate binding set per query is an opt-in for shapes that need renaming or flattening (server-definition 4.8).
 
 ## 5. Security requirements
 

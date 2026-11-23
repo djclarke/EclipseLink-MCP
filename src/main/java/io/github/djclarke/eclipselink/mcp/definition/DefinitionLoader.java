@@ -32,20 +32,23 @@ import tools.jackson.dataformat.yaml.YAMLMapper;
 /**
  * Reads a server definition directory and validates its structure.
  *
- * <p>String values may use {@code ${env:NAME}}, {@code ${env:NAME:-default}} and {@code ${definition.dir}}.
+ * <p>String values may use {@code ${env:NAME}}, {@code ${file:PATH}}, references of plugin
+ * {@link SecretResolver}s, a {@code :-default} on any of these, and {@code ${definition.dir}}.
  * Substitution happens on parsed values, so an environment value can never change the YAML structure.
  */
 public final class DefinitionLoader {
 
     public static final String DESCRIPTOR_FILE = "eclipselink-mcp.yaml";
 
-    private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{(env:([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?|definition\\.dir)}");
+    /** {@code ${definition.dir}}, or {@code ${scheme:reference}} with an optional {@code :-default}. */
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{(definition\\.dir|([a-z][a-z0-9-]*):([^}]*))}");
+    private static final Pattern SECRET_REFERENCE = Pattern.compile("\\$\\{[a-z][a-z0-9-]*:[^}]+}");
     private static final Pattern NAME = Pattern.compile("[a-z][a-z0-9_]{0,40}");
 
     private final YAMLMapper mapper = YAMLMapper.builder()
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .build();
-    private final Function<String, String> environment;
+    private final SecretResolvers resolvers;
 
     public DefinitionLoader() {
         this(System::getenv);
@@ -53,7 +56,14 @@ public final class DefinitionLoader {
 
     /** For tests: supply environment variables from a function instead of the process environment. */
     public DefinitionLoader(Function<String, String> environment) {
-        this.environment = environment;
+        this(environment, DefinitionLoader.class.getClassLoader());
+    }
+
+    /**
+     * @param plugins classloader searched for {@link SecretResolver} plugins (META-INF/services)
+     */
+    public DefinitionLoader(Function<String, String> environment, ClassLoader plugins) {
+        this.resolvers = new SecretResolvers(environment, plugins);
     }
 
     public ServerDefinition load(Path directory) {
@@ -73,22 +83,41 @@ public final class DefinitionLoader {
         validate(descriptor, dir);
 
         List<ReportDefinition> reports = loadReports(dir.resolve("reports"));
-        return new ServerDefinition(dir, descriptor, reports);
+        List<QueryDefinition> queries = loadQueries(dir.resolve("queries"));
+        return new ServerDefinition(dir, descriptor, reports, queries);
+    }
+
+    private List<QueryDefinition> loadQueries(Path queriesDir) {
+        List<QueryDefinition> queries = new ArrayList<>();
+        Set<String> names = new HashSet<>();
+        for (Path file : yamlFiles(queriesDir)) {
+            QueryDefinition query = convert(readTree(file), QueryDefinition.class, file);
+            require(query.name() != null && NAME.matcher(query.name()).matches(),
+                    file + ": query name must match " + NAME.pattern());
+            require(!query.name().equals("entities"), file + ": query name 'entities' is reserved (query_entities)");
+            require(names.add(query.name()), file + ": duplicate query name " + query.name());
+            require(query.root() != null, file + ": query needs a root entity");
+            require(!query.graph().isEmpty(), file + ": query needs a graph (the attribute paths to return)");
+            queries.add(query);
+        }
+        return queries;
+    }
+
+    private static List<Path> yamlFiles(Path dir) {
+        if (!Files.isDirectory(dir)) {
+            return List.of();
+        }
+        try (Stream<Path> s = Files.list(dir)) {
+            return s.filter(p -> p.toString().endsWith(".yaml") || p.toString().endsWith(".yml")).sorted().toList();
+        } catch (IOException e) {
+            throw new DefinitionException("Cannot list " + dir, e);
+        }
     }
 
     private List<ReportDefinition> loadReports(Path reportsDir) {
         List<ReportDefinition> reports = new ArrayList<>();
-        if (!Files.isDirectory(reportsDir)) {
-            return reports;
-        }
-        List<Path> files;
-        try (Stream<Path> s = Files.list(reportsDir)) {
-            files = s.filter(p -> p.toString().endsWith(".yaml") || p.toString().endsWith(".yml")).sorted().toList();
-        } catch (IOException e) {
-            throw new DefinitionException("Cannot list " + reportsDir, e);
-        }
         Set<String> names = new HashSet<>();
-        for (Path file : files) {
+        for (Path file : yamlFiles(reportsDir)) {
             ReportDefinition report = convert(readTree(file), ReportDefinition.class, file);
             require(report.name() != null && NAME.matcher(report.name()).matches(),
                     file + ": report name must match " + NAME.pattern());
@@ -124,14 +153,14 @@ public final class DefinitionLoader {
         require(l.maxDepth() >= 0 && l.maxDepth() <= 5, "limits.maxDepth must be between 0 and 5");
     }
 
-    /** A password must come from the environment (or be empty), never a literal in the file. */
+    /** A password must be a secret reference (or empty), never a literal in the file. */
     private static void checkNoLiteralPassword(JsonNode tree) {
         JsonNode password = tree.path("connection").path("password");
         if (password.isString()) {
             String raw = password.asString();
-            if (!raw.isEmpty() && !raw.trim().matches("\\$\\{env:[^}]+}")) {
-                throw new DefinitionException(
-                        "connection.password must be an environment reference such as ${env:DB_PASSWORD}, not a literal");
+            if (!raw.isEmpty() && !SECRET_REFERENCE.matcher(raw.trim()).matches()) {
+                throw new DefinitionException("connection.password must be a secret reference such as "
+                        + "${env:DB_PASSWORD} or ${file:/run/secrets/db-password}, not a literal");
             }
         }
     }
@@ -164,20 +193,34 @@ public final class DefinitionLoader {
             if (m.group(1).equals("definition.dir")) {
                 replacement = dir.toString().replace('\\', '/');
             } else {
-                String name = m.group(2);
-                String env = environment.apply(name);
-                if (env == null) {
-                    if (m.group(3) == null) {
-                        throw new DefinitionException("Environment variable " + name + " is not set");
-                    }
-                    env = m.group(4);
+                String scheme = m.group(2);
+                String reference = m.group(3);
+                String dflt = null;
+                int d = reference.indexOf(":-");
+                if (d >= 0) {
+                    dflt = reference.substring(d + 2);
+                    reference = reference.substring(0, d);
                 }
-                replacement = env;
+                replacement = resolvers.get(scheme).resolve(reference, dir);
+                if (replacement == null) {
+                    if (dflt == null) {
+                        throw new DefinitionException(missing(scheme, reference, dir));
+                    }
+                    replacement = dflt;
+                }
             }
             m.appendReplacement(out, Matcher.quoteReplacement(replacement));
         }
         m.appendTail(out);
         return out.toString();
+    }
+
+    private static String missing(String scheme, String reference, Path dir) {
+        return switch (scheme) {
+            case "env" -> "Environment variable " + reference + " is not set";
+            case "file" -> "Secret file not found: " + dir.resolve(reference).normalize();
+            default -> "Secret ${" + scheme + ":" + reference + "} not found";
+        };
     }
 
     private JsonNode readTree(Path file) {

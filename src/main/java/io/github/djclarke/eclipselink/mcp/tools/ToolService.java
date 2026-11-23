@@ -35,13 +35,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.github.djclarke.eclipselink.mcp.definition.Descriptor;
+import io.github.djclarke.eclipselink.mcp.definition.QueryDefinition;
 import io.github.djclarke.eclipselink.mcp.definition.ReportDefinition;
 import io.github.djclarke.eclipselink.mcp.json.EntityJson;
 import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
 import io.github.djclarke.eclipselink.mcp.query.AttributePath;
 import io.github.djclarke.eclipselink.mcp.query.Cursors;
 import io.github.djclarke.eclipselink.mcp.query.Filters;
+import io.github.djclarke.eclipselink.mcp.query.LoadGraph;
 import io.github.djclarke.eclipselink.mcp.query.Mappings;
+import io.github.djclarke.eclipselink.mcp.query.NamedQuery;
 import io.github.djclarke.eclipselink.mcp.query.NamedReport;
 
 /**
@@ -63,6 +66,7 @@ public final class ToolService {
     private final boolean audit;
     private final EntityJson json;
     private final Map<String, NamedReport> reports = new LinkedHashMap<>();
+    private final Map<String, NamedQuery> queries = new LinkedHashMap<>();
     private final Map<String, Tool> tools = new LinkedHashMap<>();
 
     public ToolService(ModelRuntime model) {
@@ -74,6 +78,9 @@ public final class ToolService {
 
         for (ReportDefinition r : model.definition().reports()) {
             reports.put(r.toolName(), NamedReport.compile(r, model));
+        }
+        for (QueryDefinition q : model.definition().queries()) {
+            queries.put(q.toolName(), NamedQuery.compile(q, model));
         }
 
         Descriptor.Tools enabled = d.tools();
@@ -130,6 +137,19 @@ public final class ToolService {
                         r.inputSchema(limits.maxPageSize()), args -> runReport(r, args)));
             }
         }
+        if (enabled.queries()) {
+            for (NamedQuery q : queries.values()) {
+                QueryDefinition def = q.definition();
+                add(new Tool(def.toolName(), def.title() == null ? def.name() : def.title(),
+                        (def.description() == null ? "" : def.description() + " ")
+                                + "Returns " + def.root() + " items with: " + String.join(", ", def.graph()) + ".",
+                        q.inputSchema(limits.maxPageSize()), args -> runQuery(q, args)));
+            }
+        }
+    }
+
+    public Collection<NamedQuery> queries() {
+        return queries.values();
     }
 
     public Collection<Tool> tools() {
@@ -250,6 +270,9 @@ public final class ToolService {
         Expression where = keyExpression(d, eb, id);
         ReadAllQuery q = new ReadAllQuery(d.getJavaClass(), eb);
         q.setSelectionCriteria(where);
+        q.setIsReadOnly(true);
+        LoadGraph.of(d, selection != null ? selection.paths() : LoadGraph.toOnePaths(d, depth))
+                .applyTo(q, eb, limits.maxPageSize());
         EntityManager em = model.createEntityManager();
         try {
             List<?> found = JpaHelper.createQuery(q, em).setMaxResults(1).getResultList();
@@ -303,6 +326,10 @@ public final class ToolService {
         }
         for (String key : Mappings.keyAttributes(d)) {
             q.addOrdering(eb.get(key).ascending()); // stable paging
+        }
+        q.setIsReadOnly(true);
+        if (selection != null) {
+            LoadGraph.of(d, selection.paths()).applyTo(q, eb, pageSize + 1);
         }
 
         EntityManager em = model.createEntityManager();
@@ -359,6 +386,29 @@ public final class ToolService {
             out.put("columns", columns);
             out.put("rows", rows.subList(0, Math.min(pageSize, rows.size())));
             if (rows.size() > pageSize) {
+                out.put("nextCursor", Cursors.encode(offset + pageSize));
+            }
+            return checkSize(out);
+        } finally {
+            em.close();
+        }
+    }
+
+    private Map<String, Object> runQuery(NamedQuery query, Map<String, Object> args) {
+        int pageSize = intArg(args, "pageSize", limits.defaultPageSize(), 1, limits.maxPageSize());
+        int offset = Cursors.decode(args.get("cursor"));
+        EntityManager em = model.createEntityManager();
+        try {
+            List<DynamicEntity> found = query.run(em, args, offset, pageSize + 1);
+            List<Object> items = new ArrayList<>();
+            for (int i = 0; i < Math.min(pageSize, found.size()); i++) {
+                items.add(json.render(found.get(i), query.root(), query.graph(), 0));
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("query", query.definition().name());
+            out.put("entity", query.root().getAlias());
+            out.put("items", items);
+            if (found.size() > pageSize) {
                 out.put("nextCursor", Cursors.encode(offset + pageSize));
             }
             return checkSize(out);

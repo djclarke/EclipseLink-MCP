@@ -17,6 +17,7 @@ import org.eclipse.persistence.descriptors.ClassDescriptor;
 
 import io.github.djclarke.eclipselink.mcp.definition.Descriptor;
 import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.query.NamedQuery;
 import io.github.djclarke.eclipselink.mcp.query.NamedReport;
 import io.github.djclarke.eclipselink.mcp.tools.Json;
 import io.github.djclarke.eclipselink.mcp.tools.ToolException;
@@ -77,6 +78,19 @@ public final class McpServerFactory {
                                     .toList()))));
         }
 
+        for (NamedQuery q : tools.queries()) {
+            String title = q.definition().title() == null ? q.definition().name() : q.definition().title();
+            resources.add(resource("eclipselink://query/" + q.definition().name(), "query-" + q.definition().name(),
+                    title, "application/json", "Parameters and graph of " + title,
+                    () -> Json.writePretty(Map.of(
+                            "name", q.definition().name(),
+                            "tool", q.definition().toolName(),
+                            "description", String.valueOf(q.definition().description()),
+                            "root", q.root().getAlias(),
+                            "inputSchema", q.inputSchema(model.definition().descriptor().limits().maxPageSize()),
+                            "graph", q.definition().graph()))));
+        }
+
         return McpServer.sync(transport)
                 .serverInfo(new McpSchema.Implementation(info.name(), info.title(), versionOf(info)))
                 .instructions(instructions(model, tools))
@@ -127,6 +141,11 @@ public final class McpServerFactory {
             sb.append("Report tools: ").append(String.join(", ", reports))
                     .append(". Prefer these for totals and summaries.\n");
         }
+        List<String> queries = tools.queries().stream().map(q -> q.definition().toolName()).toList();
+        if (!queries.isEmpty()) {
+            sb.append("Named query tools: ").append(String.join(", ", queries))
+                    .append(". Prefer these when one fits: they return related data in one call.\n");
+        }
         sb.append("Use list_entities and describe_entity to learn the model, query_entities with a structured "
                 + "filter to find rows, and page with nextCursor. Results only include what the server's database "
                 + "account can read.");
@@ -161,6 +180,14 @@ public final class McpServerFactory {
             for (NamedReport r : tools.reports()) {
                 sb.append("- `").append(r.definition().toolName()).append("`: ")
                         .append(String.valueOf(r.definition().description())).append('\n');
+            }
+        }
+        if (!tools.queries().isEmpty()) {
+            sb.append("\n## Named queries\n\n");
+            for (NamedQuery q : tools.queries()) {
+                sb.append("- `").append(q.definition().toolName()).append("`: ")
+                        .append(String.valueOf(q.definition().description())).append(" Graph: ")
+                        .append(String.join(", ", q.definition().graph())).append('\n');
             }
         }
         return sb.toString();

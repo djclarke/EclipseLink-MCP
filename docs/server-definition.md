@@ -25,13 +25,15 @@ sales-db/                          # one server definition
 ├── reports/
 │   ├── sales-by-region.yaml       # one named report per file (optional)
 │   └── open-orders-by-customer.yaml
+├── queries/
+│   └── order-details.yaml         # one named entity query per file, with its graph (optional)
 ├── prompts/
 │   └── quarterly-review.md        # author-defined MCP prompts (optional)
-├── lib/                           # JDBC driver JARs (optional, see 3.3)
+├── drivers/                       # JDBC driver JARs (optional, see 3.3)
 └── README.md                      # generated summary of the definition
 ```
 
-*Proposed:* one report per file and one prompt per file, so reviews and diffs stay small.
+*Proposed:* one report, query or prompt per file, so reviews and diffs stay small.
 
 ### 2.1 Deployment descriptor: `eclipselink-mcp.yaml`
 
@@ -48,6 +50,7 @@ connection:
   url: jdbc:h2:file:./data/sales
   user: ${env:SALES_DB_USER}
   password: ${env:SALES_DB_PASSWORD}
+  # drivers: drivers                 # JDBC driver JARs directory (default: drivers/ if present, see 3.3)
   pool:                             # EclipseLink internal pool (NFR-6)
     min: 1
     max: 8
@@ -84,8 +87,8 @@ logging:
 
 Rules:
 
-- `${env:NAME}` is the only way to supply secrets. A literal password in the descriptor fails validation.
-- `${env:NAME:-default}` supplies a default, and `${definition.dir}` expands to the definition directory. Substitution happens on parsed values, so an environment value cannot change the YAML structure.
+- Secrets are supplied only as references: `${env:NAME}` (environment variable), `${file:PATH}` (file content, e.g. a mounted Docker or Kubernetes secret), or a plugin scheme (5.3). A literal password in the descriptor fails validation.
+- Any reference takes a default with `:-` (`${env:NAME:-default}`), and `${definition.dir}` expands to the definition directory. Substitution happens on parsed values, so an environment value cannot change the YAML structure.
 - Relative paths resolve against the definition directory.
 - Unknown keys fail validation, so typos are caught at startup.
 
@@ -96,6 +99,8 @@ Standard EclipseLink ORM XML with `<entity ... access="VIRTUAL">` dynamic entiti
 ### 2.3 JSON bindings: `model/eclipselink-oxm.xml`
 
 MOXy external bindings holding **overrides only** (requirements FR-29). With no file, every entity uses default JSON binding: attribute names as mapped, relationships beyond `maxDepth` rendered as `{ "id": ... }` references.
+
+This file is the **base** shape shared by every tool. A named query (2.5) narrows it per use case with its graph, and can add its own read-only bindings where the base shape does not fit (4.8).
 
 *Proposed:* XML for the OXM file, since MOXy's XML bindings format is the most complete; JSON bindings can be accepted later.
 
@@ -130,7 +135,39 @@ joins:
 
 Filter grammar is shared with `query_entities` (4.3). Every path, parameter and type is checked at startup (FR-22).
 
-### 2.5 Prompts: `prompts/*.md`
+### 2.5 Named queries: `queries/*.yaml`
+
+A named query returns **entities with a declared amount of their related graph**, for one use case. Where a report (2.4) returns flat rows, a named query returns nested JSON: an order with its customer and its lines, each line with its product. The `graph` says exactly which attributes and relationships are loaded and returned, so the agent gets what the use case needs in one call, with no lazy loading per row.
+
+```yaml
+name: order_details                 # tool name becomes query_order_details
+title: Order details
+description: Orders for one customer region, each with its customer and its lines.
+root: Order
+filter:
+  and:
+    - { path: customer.region, op: eq, param: region }
+    - { path: status, op: eq, param: status }    # dropped when the optional param is not given
+orderBy: [{ by: orderDate, dir: desc }]
+parameters:
+  region: { type: string, required: true }
+  status: { type: string }
+graph:                              # what is loaded AND what is returned
+  - orderDate
+  - status
+  - total
+  - customer.name
+  - lines.quantity
+  - lines.price
+  - lines.product.name
+  - lines.product.category
+```
+
+- `graph` paths follow mapped relationships. Each item always includes its key, and every nested object its key, so results can be joined back to `find_entity`. A path ending in a relationship (`customer`) returns that entity's default shape: basic attributes plus to-one references.
+- Filter grammar, parameters and paging are the same as for reports (2.4). Callers supply parameters and paging only, never the graph or filter.
+- Name `entities` is reserved (`query_entities`). Startup fails on an unknown path, an orderBy through a to-many relationship, or an undeclared or unused parameter (6).
+
+### 2.6 Prompts: `prompts/*.md`
 
 Markdown with YAML front matter:
 
@@ -167,13 +204,22 @@ eclipselink-mcp-server.jar
   --validate                 load and validate, print a summary, exit
   --transport stdio|http     override descriptor transport
   --port <n>                 HTTP port
+  --drivers <dir>            JDBC driver JARs directory (overrides the descriptor, 3.3)
 ```
 
 `--validate` connects to the database, builds the model and checks reports and prompts, then exits non-zero on any error. Design-time skills and CI use it.
 
 ### 3.3 JDBC drivers
 
-*Proposed:* drivers for H2 and PostgreSQL ship in the runtime; others go in the definition's `lib/` folder (or the bundled JAR). Oracle and others are not redistributed.
+*Decided (2026-11-23):* only the **H2** driver ships inside the runtime JAR, for the sample and tests. Every other driver (PostgreSQL, MySQL, Oracle, SQL Server, ...) is supplied by the deployment, so the runtime stays vendor-neutral and never redistributes a driver whose license does not allow it.
+
+The runtime loads driver JARs from the first of these that is set:
+
+1. the `--drivers <dir>` command line option;
+2. `connection.drivers` in the descriptor (relative to the definition directory);
+3. a `drivers/` folder in the definition directory, if it exists.
+
+Every `*.jar` in that directory is loaded through a child classloader, and each `java.sql.Driver` it provides (via `META-INF/services/java.sql.Driver`) is registered for the life of the server. A named `drivers` directory that does not exist, or holds no JAR, fails startup.
 
 ### 3.4 Client configuration
 
@@ -193,6 +239,8 @@ Claude Desktop / Claude Code (`mcpServers`), stdio:
 ```
 
 HTTP (later milestone): `{ "type": "http", "url": "https://host/mcp" }`.
+
+The client's `env` block keeps the password in clear text in the client's config file. Until a keychain resolver exists (5.3), a desktop user can set the descriptor's password to `${file:/Users/me/.secrets/sales-db.pw}` and leave the password out of `env`. That file should be readable by the user alone. Use an absolute path, because `~` is not expanded.
 
 The generated `README.md` in each definition includes these snippets with the right paths and environment variable names.
 
@@ -270,6 +318,13 @@ Output: `{ "report": "sales_by_region", "columns": [ { "name": "region", "type":
 
 Tool `title` and `description` come from the report file.
 
+#### `query_<name>` (one per named query)
+
+Input: the query's `parameters` as a JSON Schema object, plus `pageSize` and `cursor`.
+Output: `{ "query": "order_details", "entity": "Order", "items": [ { "id": 1004, "orderDate": "2026-09-02", "status": "CANCELLED", "total": 240.00, "customer": { "id": 3, "name": "Initech" }, "lines": [ { "id": 5, "quantity": 2, "price": 120.00, "product": { "id": 2, "name": "Gadget", "category": "HARDWARE" } } ] } ], "nextCursor": null }`.
+
+The tool description lists the graph, so agents can pick the query whose shape fits the question. Each page is loaded as described in 4.8.
+
 ### 4.4 Resources
 
 | URI | Content |
@@ -277,6 +332,7 @@ Tool `title` and `description` come from the report file.
 | `eclipselink://model` | Overview: entities, relationships, reports (Markdown) |
 | `eclipselink://entity/{name}` | Entity description and JSON Schema (JSON) |
 | `eclipselink://report/{name}` | Report description, parameters and columns (JSON) |
+| `eclipselink://query/{name}` | Named query description, parameters and graph (JSON) |
 
 Exposed as static resources plus resource templates for `{name}`. Resources describe structure only; data is reached through tools.
 
@@ -285,7 +341,7 @@ Exposed as static resources plus resource templates for `{name}`. Resources desc
 ### 4.5 Prompts
 
 - **Built-in:** `explore_data` (argument: optional `topic`). Walks an agent through the model resource, picks entities or reports and answers the question with tools.
-- **Author-defined:** one per file in `prompts/` (2.5).
+- **Author-defined:** one per file in `prompts/` (2.6).
 
 ### 4.6 Completions
 
@@ -298,6 +354,36 @@ Argument completion for `entity` and `path` inputs on tools, and for prompt argu
 - `listChanged` is declared `false` for tools, resources and prompts: the definition is static for the life of the process. Hot reload (FR-5) would turn these on later.
 - Cancellation: a cancelled request cancels the running JDBC statement.
 
+### 4.8 Loading related data and JSON shapes
+
+Relationships in the model are lazy. Rendering a page of entities one lazy load at a time would cost one SQL statement per row per relationship (N+1). Every entity tool therefore decides up front what to load, from the shape it will return:
+
+| Tool | Load graph |
+|---|---|
+| `query_<name>` | The query's `graph` |
+| `query_entities`, `find_entity` with `select` | The `select` paths |
+| `find_entity` without `select` | To-one relationships to `depth` |
+| `query_entities` without `select` | None: basic attributes only |
+
+**Loading.** Each relationship in the load graph is batch read with EclipseLink `BatchFetchType.IN`: after the page of roots is read, one statement per relationship level fetches the related rows for the whole page (`WHERE ID IN (...)`). `order_details` above costs four statements per page (orders, customers, lines, products) whether the page has 3 rows or 500. IN batching is used rather than JOIN batching because it stays correct with paging. Queries run read-only (`setIsReadOnly`), so no change tracking copies are made.
+
+**References.** A to-one relationship outside the graph is still returned as a reference holding the target's key (`"customer": { "id": 3 }`). The key is read from the foreign key in the row already fetched, so a reference never triggers a lazy load. To-many relationships outside the graph are omitted.
+
+**Several shapes over one model.** Different use cases need different amounts of the same entities. The model stays single (one ORM mapping of each table, one persistence unit and connection pool), and each use case is a named query with its own graph. Two ways to give each use case its own read-only MOXy shape were weighed:
+
+| | A. Object graphs over shared bindings (proposed default) | B. Separate binding set per use case |
+|---|---|---|
+| What | One base MOXy context over the dynamic entities (2.3). Each named query's graph becomes a MOXy object graph (`xml-named-object-graph`), passed per marshal call (`MarshallerProperties.OBJECT_GRAPH`). | A query names its own OXM file (`bindings: views/order-summary-oxm.xml`) and gets its own `DynamicJAXBContext` over the same entities. |
+| Can do | Choose which attributes and relationships appear, and how deep. | Also rename, flatten (`xml-path`: `customerName` from `customer/name`), reorder, change value formats. |
+| Cost | One context for the server; graphs are cheap. Names and types stay the same across tools, so `describe_entity` stays true everywhere. | One context per variant, more startup time and memory. Each variant needs its own JSON Schema, and the same entity looks different per tool. |
+| Fits | Most use cases: subsets of the same graph. | Integration-facing shapes that must match an existing contract. |
+
+*Proposed:* A by default, with B as an opt-in `bindings` key on a named query for when a use case needs a shape that A cannot express. Both are read-only: the server only marshals, never unmarshals, and mappings in per-query OXM files are marked `read-only`. A third option, a second ORM mapping of the same table (a read-only "view entity") or a database view, stays available to the data owner for a flat projection, but reports (2.4) usually cover that case without growing the model.
+
+In both options, one graph drives the JPA load plan (batch reads) and the MOXy object graph. That keeps what is loaded and what is serialized the same, so marshalling never touches an unloaded relationship.
+
+*As built in the POC:* named queries, graph-driven IN batch loading, foreign-key references and read-only queries are implemented and tested, including the statement counts above. JSON is still rendered by the POC's descriptor-based renderer with the same semantics as option A. Rendering through a MOXy context built on the dynamic entity classes is the next step (EclipseLink's JPA-RS already builds MOXy contexts over JPA entities, which is the precedent to follow). Option B is not built.
+
 ## 5. Hosting
 
 What a host needs to run one deployment.
@@ -309,7 +395,7 @@ What a host needs to run one deployment.
 | JVM | Java 21 or later (JRE is enough). *Proposed:* no other runtime dependencies. |
 | Runtime | `eclipselink-mcp-server.jar` (or a bundled JAR / container image, 3.1). |
 | Definition | The definition directory or zip, read-only to the process. |
-| JDBC driver | Bundled (H2, PostgreSQL) or in the definition's `lib/` (3.3). |
+| JDBC driver | H2 is bundled; any other driver JAR goes in the definition's `drivers/` folder or a directory given by `--drivers` (3.3). |
 | Database access | Network route from the host to the database; the shared account (requirements 5.0) with read grants on the mapped tables only. |
 | Secrets | Database credentials supplied as environment variables (2.1). |
 | Resources | Starting point: 1 vCPU, 512 MB heap for a small schema; size the heap to `maxPageSize` x row size x concurrent calls. EclipseLink's shared cache is off for report queries (FR-21); entity cache size is configurable. |
@@ -327,10 +413,40 @@ Each definition is its own process or pod, covering one database and one mapped 
 
 ### 5.3 Secrets and credentials
 
-- Credentials come only from environment variables, which hosts fill from their secret store (client config `env`, Docker/Kubernetes secrets, a cloud secret manager).
-- The definition never contains secrets and can be committed to git as is.
-- The database account should be read-only and limited to the mapped tables; the runtime opens connections read-only where the driver supports it.
-- Credentials never appear in logs, errors (`DATABASE_ERROR` is sanitized) or MCP output.
+The definition never holds a secret, so it can be committed to git as is. Connection settings refer to secrets, and a **secret resolver** turns each reference into a value at startup.
+
+```yaml
+connection:
+  user: ${env:SALES_DB_USER}
+  password: ${file:/run/secrets/sales-db-password}   # or ${env:...}, or a plugin scheme
+```
+
+**Resolvers.**
+
+| Scheme | Source | Status |
+|---|---|---|
+| `env` | Environment variable | Built in (POC) |
+| `file` | File content, trailing line breaks removed; relative to the definition directory | Built in (POC) |
+| `keychain` | macOS Keychain, Windows Credential Manager, Linux Secret Service | Planned: desktop |
+| `aws-sm`, `azure-kv`, `gcp-sm`, `oci-vault`, `vault` | AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, OCI Vault, HashiCorp Vault | Planned: cloud packaging |
+
+A resolver implements `SecretResolver` (`scheme()`, `resolve(reference, definitionDir)`). Plugins are found with Java's `ServiceLoader`, so each cloud provider is a separate optional JAR and the core runtime has no cloud SDK. An unknown scheme fails startup and lists the available ones. *Proposed:* plugins load from a `plugins/` folder (and `--plugins <dir>`) through a child classloader, as JDBC drivers do (3.3). The POC finds plugins on the runtime classpath only.
+
+**Where each fits.**
+
+- **Desktop (stdio):** `env` from the client config works but keeps the password in clear text in that file. `file` with an owner-only file is better. A `keychain` resolver removes the secret from disk entirely.
+- **Containers:** Kubernetes, ECS, Cloud Run and Docker inject secrets as environment variables or mounted files, so `env` and `file` cover them with no plugin.
+- **Cloud, direct from a secret manager:** the provider plugin, authenticated by the workload's own identity (IAM role, managed identity, workload identity). The plugin holds no credentials of its own.
+- **No stored password:** some databases accept a short-lived token from the workload's identity: AWS RDS IAM authentication, Azure AD for Azure SQL and PostgreSQL, Cloud SQL IAM. *Planned:* a token provider hook on the connection that fetches a fresh token as connections are opened, rather than once at startup.
+- **Oracle Wallet:** the Oracle JDBC driver already reads a wallet named in the URL (`jdbc:oracle:thin:@sales_high?TNS_ADMIN=/path/to/wallet`), so the descriptor carries no password and no resolver is needed. Documented, not built.
+
+**Handling rules** (built where marked):
+
+- Secrets never appear in logs, errors or MCP output. No tool or resource exposes connection settings. `DATABASE_ERROR` messages are sanitized (built).
+- The descriptor's `toString` masks the password, so a printed or logged definition cannot leak it (built). Resolver errors name the reference, never the value (built).
+- Secrets are resolved once at startup, and are held only in the connection settings passed to EclipseLink. Rotation needs a restart until the token provider hook exists.
+- *Proposed:* warn at startup when a `file` secret can be read by other users.
+- The database account should be read-only and limited to the mapped tables. The runtime opens connections read-only where the driver supports it.
 
 ### 5.4 HTTP endpoint (later milestone)
 
@@ -367,6 +483,7 @@ The runtime refuses to start, with a clear message, if any of these fail:
 3. ORM XML loads and every mapped table and column exists and is readable.
 4. OXM bindings refer only to mapped entities and attributes.
 5. Every report: paths, joins, aggregates, parameter types and uses.
+5a. Every named query: graph and orderBy paths, filter, parameter types and uses; per-query bindings refer only to mapped attributes.
 6. Every prompt: front matter, argument names used in the body.
 7. Tool name uniqueness (including `report_` names) and MCP name rules.
 
@@ -374,6 +491,8 @@ The runtime refuses to start, with a clear message, if any of these fail:
 
 1. Descriptor format: YAML (proposed) or JSON.
 2. Report and prompt formats: YAML and Markdown files (proposed) or embedded in the descriptor.
-3. Which JDBC drivers ship with the runtime.
+3. ~~Which JDBC drivers ship with the runtime.~~ *Decided: H2 only; others from a drivers directory (3.3).*
 4. Whether the bundled JAR (`package` command) is in the POC or follows it. *Proposed: follows.*
-5. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
+6. Per-use-case JSON shapes: object graphs over shared bindings by default, separate binding sets opt-in (4.8). *Proposed.*
+7. Secret resolver plugins: a `plugins/` folder like `drivers/` (5.3). *Proposed.*
+8. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*

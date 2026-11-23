@@ -25,7 +25,7 @@ public record Descriptor(
     public static final String API_VERSION = "eclipselink-mcp/v1";
 
     public Descriptor {
-        tools = tools == null ? new Tools(null, null, null, null, null) : tools;
+        tools = tools == null ? new Tools(null, null, null, null, null, null) : tools;
         limits = limits == null ? new Limits(null, null, null, null, null) : limits;
         transport = transport == null ? new Transport(null) : transport;
         logging = logging == null ? new Logging(null, null) : logging;
@@ -34,9 +34,20 @@ public record Descriptor(
     public record Server(String name, String title, String version, String instructions) {
     }
 
-    public record Connection(String url, String user, String password, Pool pool) {
+    /**
+     * @param drivers directory of JDBC driver JARs, relative to the definition directory (docs 3.3)
+     */
+    public record Connection(String url, String user, String password, String drivers, Pool pool) {
         public Connection {
             pool = pool == null ? new Pool(null, null) : pool;
+        }
+
+        /** Never prints the password, so a logged or printed descriptor cannot leak it. */
+        @Override
+        public String toString() {
+            return "Connection[url=" + url + ", user=" + user + ", password="
+                    + (password == null || password.isEmpty() ? "<none>" : "****") + ", drivers=" + drivers
+                    + ", pool=" + pool + "]";
         }
     }
 
@@ -55,13 +66,15 @@ public record Descriptor(
             Boolean describe_entity,
             Boolean find_entity,
             Boolean query_entities,
-            Boolean reports) {
+            Boolean reports,
+            Boolean queries) {
         public Tools {
             list_entities = list_entities == null || list_entities;
             describe_entity = describe_entity == null || describe_entity;
             find_entity = find_entity == null || find_entity;
             query_entities = query_entities == null || query_entities;
             reports = reports == null || reports;
+            queries = queries == null || queries;
         }
     }
 

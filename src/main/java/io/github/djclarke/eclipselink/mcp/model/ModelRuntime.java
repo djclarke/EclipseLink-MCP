@@ -55,19 +55,38 @@ public final class ModelRuntime implements AutoCloseable {
     public static final String DESCRIPTION_PROPERTY = "mcp.description";
 
     private final ServerDefinition definition;
+    private final JdbcDrivers drivers;
     private final URLClassLoader resourceLoader;
     private final EntityManagerFactory emf;
     private final Map<String, ClassDescriptor> entities;
 
-    private ModelRuntime(ServerDefinition definition, URLClassLoader resourceLoader, EntityManagerFactory emf,
-                         Map<String, ClassDescriptor> entities) {
+    private ModelRuntime(ServerDefinition definition, JdbcDrivers drivers, URLClassLoader resourceLoader,
+                         EntityManagerFactory emf, Map<String, ClassDescriptor> entities) {
         this.definition = definition;
+        this.drivers = drivers;
         this.resourceLoader = resourceLoader;
         this.emf = emf;
         this.entities = entities;
     }
 
     public static ModelRuntime start(ServerDefinition definition) {
+        return start(definition, (Path) null);
+    }
+
+    /**
+     * @param driversOverride JDBC drivers directory from the command line, or null (docs 3.3)
+     */
+    public static ModelRuntime start(ServerDefinition definition, Path driversOverride) {
+        JdbcDrivers drivers = JdbcDrivers.load(JdbcDrivers.directoryFor(definition, driversOverride));
+        try {
+            return startWith(definition, drivers);
+        } catch (RuntimeException e) {
+            drivers.close();
+            throw e;
+        }
+    }
+
+    private static ModelRuntime startWith(ServerDefinition definition, JdbcDrivers drivers) {
         Descriptor d = definition.descriptor();
         URLClassLoader resourceLoader = new URLClassLoader(
                 new URL[] {toUrl(definition.directory())}, ModelRuntime.class.getClassLoader());
@@ -119,11 +138,16 @@ public final class ModelRuntime implements AutoCloseable {
             closeQuietly(resourceLoader);
             throw new DefinitionException(mappingFile + " defines no entities");
         }
-        return new ModelRuntime(definition, resourceLoader, emf, Collections.unmodifiableMap(entities));
+        return new ModelRuntime(definition, drivers, resourceLoader, emf, Collections.unmodifiableMap(entities));
     }
 
     public ServerDefinition definition() {
         return definition;
+    }
+
+    /** JDBC drivers loaded from the deployment's drivers directory, if any. */
+    public JdbcDrivers drivers() {
+        return drivers;
     }
 
     /** Entities by name (JPA entity name), sorted. */
@@ -154,6 +178,7 @@ public final class ModelRuntime implements AutoCloseable {
             emf.close();
         }
         closeQuietly(resourceLoader);
+        drivers.close();
     }
 
     private static String rootMessage(Throwable t) {
