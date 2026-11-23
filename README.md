@@ -109,6 +109,8 @@ java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar call --definition /tm
 
 The Claude skill [`skills/configure-server-from-schema`](skills/configure-server-from-schema/SKILL.md) drives the whole loop with you: table selection, `init`, simplification, then named queries and reports. To use it, copy the folder to `~/.claude/skills/` or to a project's `.claude/skills/`.
 
+[samples/](samples/README.md) has both ends of that loop for the sample database: the raw `init` output in `sales-db-generated` (kept current by a golden test) and the shaped `sales-db`.
+
 ### What the POC serves
 
 The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, two named reports and one named query. From that the server exposes:
