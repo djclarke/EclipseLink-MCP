@@ -1,0 +1,178 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.model;
+
+import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.Driver;
+import java.sql.DriverManager;
+import java.sql.DriverPropertyInfo;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Properties;
+import java.util.ServiceConfigurationError;
+import java.util.ServiceLoader;
+import java.util.logging.Logger;
+import java.util.stream.Stream;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
+
+/**
+ * JDBC drivers supplied by the deployment rather than bundled in the runtime (docs/server-definition.md 3.3).
+ *
+ * <p>Every JAR in the drivers directory is loaded through a child classloader. {@link DriverManager} only hands
+ * out drivers visible to the caller's classloader, so each discovered driver is registered through a small
+ * delegating shim loaded by the runtime. {@link #close()} deregisters the shims and closes the classloader.
+ */
+public final class JdbcDrivers implements AutoCloseable {
+
+    /** Default drivers folder inside a definition directory. */
+    public static final String DEFAULT_DIRECTORY = "drivers";
+
+    private static final JdbcDrivers NONE = new JdbcDrivers(null, null, List.of(), List.of());
+
+    private final Path directory;
+    private final URLClassLoader loader;
+    private final List<Driver> shims;
+    private final List<String> driverClasses;
+
+    private JdbcDrivers(Path directory, URLClassLoader loader, List<Driver> shims, List<String> driverClasses) {
+        this.directory = directory;
+        this.loader = loader;
+        this.shims = shims;
+        this.driverClasses = driverClasses;
+    }
+
+    /**
+     * Finds the drivers directory for a definition: the override (command line) if given, else
+     * {@code connection.drivers}, else {@code drivers/} in the definition directory if present.
+     *
+     * @return the directory, or null when none applies
+     */
+    public static Path directoryFor(ServerDefinition definition, Path override) {
+        if (override != null) {
+            return override.toAbsolutePath().normalize();
+        }
+        String configured = definition.descriptor().connection().drivers();
+        if (configured != null) {
+            return definition.directory().resolve(configured).normalize();
+        }
+        Path dflt = definition.directory().resolve(DEFAULT_DIRECTORY);
+        return Files.isDirectory(dflt) ? dflt : null;
+    }
+
+    /** Loads and registers every driver in {@code directory}; null means no extra drivers. */
+    public static JdbcDrivers load(Path directory) {
+        if (directory == null) {
+            return NONE;
+        }
+        if (!Files.isDirectory(directory)) {
+            throw new DefinitionException("JDBC drivers directory not found: " + directory);
+        }
+        List<URL> jars = new ArrayList<>();
+        try (Stream<Path> files = Files.list(directory)) {
+            for (Path p : files.filter(f -> f.toString().endsWith(".jar")).sorted().toList()) {
+                jars.add(toUrl(p));
+            }
+        } catch (IOException e) {
+            throw new DefinitionException("Cannot read JDBC drivers directory " + directory, e);
+        }
+        if (jars.isEmpty()) {
+            throw new DefinitionException("No .jar files in JDBC drivers directory " + directory);
+        }
+
+        URLClassLoader loader = new URLClassLoader(jars.toArray(URL[]::new), JdbcDrivers.class.getClassLoader());
+        List<Driver> shims = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        try {
+            for (Driver driver : ServiceLoader.load(Driver.class, loader)) {
+                if (driver.getClass().getClassLoader() != loader) {
+                    continue; // already available to the runtime (e.g. the bundled H2 driver)
+                }
+                Driver shim = new Shim(driver);
+                DriverManager.registerDriver(shim);
+                shims.add(shim);
+                names.add(driver.getClass().getName());
+            }
+        } catch (ServiceConfigurationError | SQLException e) {
+            deregister(shims);
+            closeQuietly(loader);
+            throw new DefinitionException("Cannot load JDBC drivers from " + directory + ": " + e.getMessage(), e);
+        }
+        if (shims.isEmpty()) {
+            closeQuietly(loader);
+            throw new DefinitionException("No JDBC driver found in the JARs in " + directory
+                    + " (a driver JAR declares META-INF/services/java.sql.Driver)");
+        }
+        return new JdbcDrivers(directory, loader, List.copyOf(shims), List.copyOf(names));
+    }
+
+    public Path directory() {
+        return directory;
+    }
+
+    /** Class names of the drivers loaded from the directory. */
+    public List<String> driverClasses() {
+        return driverClasses;
+    }
+
+    @Override
+    public void close() {
+        deregister(shims);
+        if (loader != null) {
+            closeQuietly(loader);
+        }
+    }
+
+    private static void deregister(List<Driver> shims) {
+        for (Driver d : shims) {
+            try {
+                DriverManager.deregisterDriver(d);
+            } catch (SQLException ignored) {
+                // nothing useful to do on shutdown
+            }
+        }
+    }
+
+    private static URL toUrl(Path p) {
+        try {
+            return p.toUri().toURL();
+        } catch (MalformedURLException e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+
+    private static void closeQuietly(URLClassLoader loader) {
+        try {
+            loader.close();
+        } catch (IOException ignored) {
+            // nothing useful to do
+        }
+    }
+
+    /** Delegating driver, loaded by the runtime's classloader so that DriverManager will use it. */
+    private record Shim(Driver delegate) implements Driver {
+        @Override public Connection connect(String url, Properties info) throws SQLException { return delegate.connect(url, info); }
+        @Override public boolean acceptsURL(String url) throws SQLException { return delegate.acceptsURL(url); }
+        @Override public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) throws SQLException { return delegate.getPropertyInfo(url, info); }
+        @Override public int getMajorVersion() { return delegate.getMajorVersion(); }
+        @Override public int getMinorVersion() { return delegate.getMinorVersion(); }
+        @Override public boolean jdbcCompliant() { return delegate.jdbcCompliant(); }
+        @Override public Logger getParentLogger() throws SQLFeatureNotSupportedException { return delegate.getParentLogger(); }
+    }
+}

@@ -34,7 +34,10 @@ public record Descriptor(
     public record Server(String name, String title, String version, String instructions) {
     }
 
-    public record Connection(String url, String user, String password, Pool pool) {
+    /**
+     * @param drivers directory of JDBC driver JARs, relative to the definition directory (docs 3.3)
+     */
+    public record Connection(String url, String user, String password, String drivers, Pool pool) {
         public Connection {
             pool = pool == null ? new Pool(null, null) : pool;
         }

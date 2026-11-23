@@ -26,7 +26,7 @@ import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
  * Command line entry point.
  *
  * <pre>
- * java -jar eclipselink-mcp-server.jar --definition &lt;dir&gt; [--validate]
+ * java -jar eclipselink-mcp-server.jar --definition &lt;dir&gt; [--drivers &lt;dir&gt;] [--validate]
  * </pre>
  *
  * stdout carries MCP messages, so everything else (logs, errors) goes to stderr.
@@ -38,10 +38,18 @@ public final class Main {
 
     public static void main(String[] args) {
         Path definitionDir = null;
+        Path driversDir = null;
         boolean validate = false;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--definition" -> definitionDir = i + 1 < args.length ? Path.of(args[++i]) : null;
+                case "--drivers" -> {
+                    if (i + 1 >= args.length) {
+                        usage(System.err);
+                        System.exit(2);
+                    }
+                    driversDir = Path.of(args[++i]);
+                }
                 case "--validate" -> validate = true;
                 case "--help", "-h" -> {
                     usage(System.out);
@@ -65,7 +73,7 @@ public final class Main {
         try {
             definition = new DefinitionLoader().load(definitionDir);
             configureLogging(definition.descriptor().logging().level());
-            model = ModelRuntime.start(definition);
+            model = ModelRuntime.start(definition, driversDir);
             tools = new ToolService(model);
         } catch (DefinitionException e) {
             System.err.println("Invalid server definition: " + e.getMessage());
@@ -76,8 +84,12 @@ public final class Main {
         if (validate) {
             PrintStream out = System.out;
             out.println("Server definition OK: " + definition.directory());
-            out.println("  server:   " + definition.descriptor().server().name() + " "
-                    + definition.descriptor().server().version());
+            String version = definition.descriptor().server().version();
+            out.println("  server:   " + definition.descriptor().server().name() + (version == null ? "" : " " + version));
+            if (model.drivers().directory() != null) {
+                out.println("  drivers:  " + String.join(", ", model.drivers().driverClasses())
+                        + " (from " + model.drivers().directory() + ")");
+            }
             out.println("  entities: " + String.join(", ", model.entities().keySet()));
             out.println("  reports:  " + String.join(", ",
                     tools.reports().stream().map(r -> r.definition().name()).toList()));
@@ -110,8 +122,9 @@ public final class Main {
     }
 
     private static void usage(PrintStream out) {
-        out.println("Usage: java -jar eclipselink-mcp-server.jar --definition <dir> [--validate]");
+        out.println("Usage: java -jar eclipselink-mcp-server.jar --definition <dir> [--drivers <dir>] [--validate]");
         out.println("  --definition <dir>  server definition directory (contains eclipselink-mcp.yaml)");
+        out.println("  --drivers <dir>     JDBC driver JARs to load (default: connection.drivers, or <definition>/drivers)");
         out.println("  --validate          load and check the definition against the database, then exit");
     }
 }

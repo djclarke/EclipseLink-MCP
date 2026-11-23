@@ -68,6 +68,14 @@ Claude Desktop / Claude Code (`mcpServers`):
 }
 ```
 
+### JDBC drivers
+
+Only the H2 driver is bundled in the runtime JAR. For any other database, put its driver JAR in a `drivers/` folder inside the server definition, point `connection.drivers` in the descriptor at a directory, or pass `--drivers <dir>` on the command line (it wins over both). See [server definition 3.3](docs/server-definition.md#33-jdbc-drivers).
+
+```sh
+java -jar target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar --definition ./hr-db --drivers ~/jdbc/postgresql
+```
+
 ### What the POC serves
 
 The sample definition ([samples/sales-db](samples/sales-db)) is a descriptor, an ORM XML of dynamic entities, and two named reports. From that the server exposes:

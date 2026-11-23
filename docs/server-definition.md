@@ -27,7 +27,7 @@ sales-db/                          # one server definition
 │   └── open-orders-by-customer.yaml
 ├── prompts/
 │   └── quarterly-review.md        # author-defined MCP prompts (optional)
-├── lib/                           # JDBC driver JARs (optional, see 3.3)
+├── drivers/                       # JDBC driver JARs (optional, see 3.3)
 └── README.md                      # generated summary of the definition
 ```
 
@@ -48,6 +48,7 @@ connection:
   url: jdbc:h2:file:./data/sales
   user: ${env:SALES_DB_USER}
   password: ${env:SALES_DB_PASSWORD}
+  # drivers: drivers                 # JDBC driver JARs directory (default: drivers/ if present, see 3.3)
   pool:                             # EclipseLink internal pool (NFR-6)
     min: 1
     max: 8
@@ -167,13 +168,22 @@ eclipselink-mcp-server.jar
   --validate                 load and validate, print a summary, exit
   --transport stdio|http     override descriptor transport
   --port <n>                 HTTP port
+  --drivers <dir>            JDBC driver JARs directory (overrides the descriptor, 3.3)
 ```
 
 `--validate` connects to the database, builds the model and checks reports and prompts, then exits non-zero on any error. Design-time skills and CI use it.
 
 ### 3.3 JDBC drivers
 
-*Proposed:* drivers for H2 and PostgreSQL ship in the runtime; others go in the definition's `lib/` folder (or the bundled JAR). Oracle and others are not redistributed.
+*Decided (2026-11-23):* only the **H2** driver ships inside the runtime JAR, for the sample and tests. Every other driver (PostgreSQL, MySQL, Oracle, SQL Server, ...) is supplied by the deployment, so the runtime stays vendor-neutral and never redistributes a driver whose license does not allow it.
+
+The runtime loads driver JARs from the first of these that is set:
+
+1. the `--drivers <dir>` command line option;
+2. `connection.drivers` in the descriptor (relative to the definition directory);
+3. a `drivers/` folder in the definition directory, if it exists.
+
+Every `*.jar` in that directory is loaded through a child classloader, and each `java.sql.Driver` it provides (via `META-INF/services/java.sql.Driver`) is registered for the life of the server. A named `drivers` directory that does not exist, or holds no JAR, fails startup.
 
 ### 3.4 Client configuration
 
@@ -309,7 +319,7 @@ What a host needs to run one deployment.
 | JVM | Java 21 or later (JRE is enough). *Proposed:* no other runtime dependencies. |
 | Runtime | `eclipselink-mcp-server.jar` (or a bundled JAR / container image, 3.1). |
 | Definition | The definition directory or zip, read-only to the process. |
-| JDBC driver | Bundled (H2, PostgreSQL) or in the definition's `lib/` (3.3). |
+| JDBC driver | H2 is bundled; any other driver JAR goes in the definition's `drivers/` folder or a directory given by `--drivers` (3.3). |
 | Database access | Network route from the host to the database; the shared account (requirements 5.0) with read grants on the mapped tables only. |
 | Secrets | Database credentials supplied as environment variables (2.1). |
 | Resources | Starting point: 1 vCPU, 512 MB heap for a small schema; size the heap to `maxPageSize` x row size x concurrent calls. EclipseLink's shared cache is off for report queries (FR-21); entity cache size is configurable. |
@@ -374,6 +384,6 @@ The runtime refuses to start, with a clear message, if any of these fail:
 
 1. Descriptor format: YAML (proposed) or JSON.
 2. Report and prompt formats: YAML and Markdown files (proposed) or embedded in the descriptor.
-3. Which JDBC drivers ship with the runtime.
+3. ~~Which JDBC drivers ship with the runtime.~~ *Decided: H2 only; others from a drivers directory (3.3).*
 4. Whether the bundled JAR (`package` command) is in the POC or follows it. *Proposed: follows.*
 5. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*

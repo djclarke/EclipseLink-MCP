@@ -1,0 +1,132 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionLoader;
+import io.github.djclarke.eclipselink.mcp.definition.ServerDefinition;
+import io.github.djclarke.eclipselink.mcp.model.JdbcDrivers;
+import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
+import io.github.djclarke.eclipselink.mcp.tools.ToolService;
+
+/**
+ * Drivers from a drivers directory (docs/server-definition.md 3.3). HSQLDB is used because it is not on the
+ * test classpath: Maven copies its JAR to {@code target/test-drivers} only.
+ */
+class JdbcDriversTest {
+
+    static final Path TEST_DRIVERS = Path.of("target/test-drivers");
+    static final String HSQLDB = "org.hsqldb.jdbc.JDBCDriver";
+
+    @TempDir
+    Path dir;
+
+    @Test
+    void driverIsNotOnTheClasspath() {
+        assertThrows(ClassNotFoundException.class, () -> Class.forName(HSQLDB));
+        assertThrows(SQLException.class, () -> DriverManager.getConnection("jdbc:hsqldb:mem:nodriver", "SA", ""));
+    }
+
+    @Test
+    void loadsRegistersAndDeregistersDrivers() throws SQLException {
+        try (JdbcDrivers drivers = JdbcDrivers.load(TEST_DRIVERS)) {
+            assertEquals(List.of(HSQLDB), drivers.driverClasses());
+            try (Connection c = DriverManager.getConnection("jdbc:hsqldb:mem:loaded", "SA", "")) {
+                assertTrue(c.isValid(1));
+            }
+        }
+        assertThrows(SQLException.class, () -> DriverManager.getConnection("jdbc:hsqldb:mem:closed", "SA", ""));
+    }
+
+    @Test
+    void serverRunsOnAnHsqldbDatabaseFromTheDefinitionsDriversFolder() throws Exception {
+        Path drivers = Files.createDirectories(dir.resolve("drivers"));
+        copyJars(TEST_DRIVERS, drivers);
+        Files.createDirectories(dir.resolve("model"));
+        Files.writeString(dir.resolve("model/eclipselink-orm.xml"), """
+                <entity-mappings xmlns="http://www.eclipse.org/eclipselink/xsds/persistence/orm" version="5.0">
+                    <entity class="hr.Employee" access="VIRTUAL">
+                        <table name="EMPLOYEE"/>
+                        <attributes>
+                            <id name="id" attribute-type="Long"><column name="ID"/></id>
+                            <basic name="name" attribute-type="String"><column name="NAME"/></basic>
+                        </attributes>
+                    </entity>
+                </entity-mappings>
+                """);
+        Files.writeString(dir.resolve(DefinitionLoader.DESCRIPTOR_FILE), """
+                apiVersion: eclipselink-mcp/v1
+                server:
+                  name: hr
+                connection:
+                  url: jdbc:hsqldb:mem:hr
+                  user: SA
+                  password: ""
+                model:
+                  mappings: model/eclipselink-orm.xml
+                """);
+
+        ServerDefinition def = new DefinitionLoader(n -> null).load(dir);
+        try (ModelRuntime model = ModelRuntime.start(def)) {
+            assertEquals(drivers, model.drivers().directory());
+            try (Connection c = DriverManager.getConnection("jdbc:hsqldb:mem:hr", "SA", "");
+                 Statement s = c.createStatement()) {
+                s.execute("CREATE TABLE EMPLOYEE (ID BIGINT PRIMARY KEY, NAME VARCHAR(50))");
+                s.execute("INSERT INTO EMPLOYEE VALUES (1, 'Ada'), (2, 'Grace')");
+            }
+            Map<String, Object> result = new ToolService(model).call("query_entities", Map.of("entity", "Employee",
+                    "filter", Map.of("path", "name", "op", "eq", "value", "Grace")));
+            assertEquals(List.of(Map.of("id", 2L, "name", "Grace")), result.get("items"));
+        }
+    }
+
+    @Test
+    void commandLineOverrideAndDescriptorSetting() throws IOException {
+        ServerDefinition sample = TestDatabase.sampleDefinition();
+        assertEquals(null, JdbcDrivers.directoryFor(sample, null), "sample has no drivers folder");
+        assertEquals(TEST_DRIVERS.toAbsolutePath(), JdbcDrivers.directoryFor(sample, TEST_DRIVERS));
+    }
+
+    @Test
+    void missingOrEmptyDirectoryFailsStartup() throws IOException {
+        DefinitionException missing = assertThrows(DefinitionException.class,
+                () -> JdbcDrivers.load(dir.resolve("nope")));
+        assertTrue(missing.getMessage().contains("not found"), missing.getMessage());
+        Path empty = Files.createDirectories(dir.resolve("empty"));
+        DefinitionException none = assertThrows(DefinitionException.class, () -> JdbcDrivers.load(empty));
+        assertTrue(none.getMessage().contains("No .jar files"), none.getMessage());
+    }
+
+    private static void copyJars(Path from, Path to) throws IOException {
+        try (Stream<Path> jars = Files.list(from)) {
+            for (Path jar : jars.filter(p -> p.toString().endsWith(".jar")).toList()) {
+                Files.copy(jar, to.resolve(jar.getFileName()));
+            }
+        }
+    }
+}
