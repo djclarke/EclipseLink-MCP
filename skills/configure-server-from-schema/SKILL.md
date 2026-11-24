@@ -158,7 +158,8 @@ Then decide the operations in `writes/`:
 
 - **create** is usually one `create_<entity>` operation over the attributes a new row needs.
 - **update** is usually one `update_<entity>` operation listing every attribute agents may change, all optional, so a call changes only what it passes. Leave out the key and the version (they identify the row and cannot be set), to-many relationships, values copied as snapshots, and attributes that should change only through a state change.
-- **State changes** get their own named operation with a `condition` and `fixed` values (`ship_order`, `cancel_order`), so an agent cannot, for example, set an order's `status` to SHIPPED on a cancelled order. Leave those attributes out of `update_<entity>`.
+- **State changes** always carry a `condition` on the current state, so an agent cannot, for example, ship a cancelled order. Use a status-only update (`update_order` with `status` allowed SHIPPED or CANCELLED, only while OPEN) or one operation per transition (`ship_order`) when transitions need different inputs. Leave those attributes out of a general `update_<entity>`.
+- **A parent with its children** (an order and its lines) can be created in one call with `items`, so the agent never sees a half-built order. Ask whether the children may change afterwards; if not, do not enable writes on the child entity at all.
 - **delete**, if allowed, is one `delete_<entity>` operation, usually with a `condition`.
 
 **b. Which lock?** Every update and delete is checked with optimistic locking (spec 4.9). The server keeps no state between calls: the version goes out in every JSON item, comes back in the write call, and the write returns the new one. A create-only entity needs no lock, because a new row cannot conflict with a stale read. Find the lock with the user:
@@ -190,6 +191,22 @@ set:                              # everything agents may change; not id or vers
   region: { allowed: [EAST, WEST, NORTH] }
   email: { description: "Contact email address" }
   creditLimit: { description: "Credit limit in USD" }
+```
+
+```yaml
+# writes/create-order.yaml  (an order with its lines, in one transaction)
+name: create_order
+action: create
+root: Order
+set:
+  customer: { required: true }
+fixed: { status: OPEN, orderDate: $today, createdAt: $now }   # $today / $now: the server's clock
+items:
+  lines:                          # Order.lines; the server sets each line's order
+    min: 1
+    set: { product: { required: true }, quantity: { required: true } }
+    copy: { price: product.price, productName: product.name }
+    sum: { total: [quantity, price] }                           # total = Σ quantity × price
 ```
 
 ```yaml

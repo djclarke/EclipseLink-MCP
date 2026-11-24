@@ -43,7 +43,7 @@
         <table name="ORDERS"/>
         <property name="mcp.description" value="A customer order"/>
         <attributes>
-            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="orderDate" attribute-type="java.time.LocalDate"><column name="ORDER_DATE"/></basic>
             <basic name="status" attribute-type="String">
                 <column name="STATUS"/>

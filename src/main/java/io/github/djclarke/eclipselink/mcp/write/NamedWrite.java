@@ -9,7 +9,12 @@
  */
 package io.github.djclarke.eclipselink.mcp.write;
 
+import java.math.BigDecimal;
 import java.sql.SQLException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +34,7 @@ import org.eclipse.persistence.expressions.Expression;
 import org.eclipse.persistence.expressions.ExpressionBuilder;
 import org.eclipse.persistence.jpa.JpaHelper;
 import org.eclipse.persistence.mappings.DatabaseMapping;
+import org.eclipse.persistence.mappings.OneToManyMapping;
 import org.eclipse.persistence.mappings.OneToOneMapping;
 import org.eclipse.persistence.queries.ReadAllQuery;
 
@@ -59,26 +65,132 @@ public final class NamedWrite {
         }
     }
 
+    /** A fixed value the server takes from its clock when the write is made: {@code $now} or {@code $today}. */
+    private enum Clock {
+        NOW("$now"), TODAY("$today");
+
+        final String token;
+
+        Clock(String token) {
+            this.token = token;
+        }
+
+        Object value(Class<?> type) {
+            if (this == TODAY) {
+                return LocalDate.now();
+            }
+            // Microseconds: the finest a SQL TIMESTAMP usually keeps, so the output matches what is stored.
+            return type == OffsetDateTime.class ? OffsetDateTime.now().truncatedTo(ChronoUnit.MICROS)
+                    : LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
+        }
+    }
+
+    /** What a call sets on one entity: caller attributes, server values and snapshots. */
+    private record Part(ClassDescriptor descriptor, Map<String, Field> set, Map<DatabaseMapping, Object> fixed,
+                        Map<DatabaseMapping, AttributePath> copy) {
+
+        /** Sets the caller's attributes that are present, then the fixed values, then the snapshots. */
+        void apply(EntityManager em, DynamicEntity entity, Map<String, Object> args, Action action) {
+            for (Map.Entry<String, Field> e : set.entrySet()) {
+                if (!args.containsKey(e.getKey())) {
+                    continue;
+                }
+                Field f = e.getValue();
+                entity.set(e.getKey(), resolve(em, f.mapping(), args.get(e.getKey()), f.allowed(), e.getKey()));
+            }
+            for (Map.Entry<DatabaseMapping, Object> e : fixed.entrySet()) {
+                DatabaseMapping m = e.getKey();
+                Object v = e.getValue();
+                entity.set(m.getAttributeName(), v instanceof Clock c ? c.value(Mappings.attributeType(m))
+                        : m.isDirectToFieldMapping() ? v : resolve(em, m, v, null, m.getAttributeName()));
+            }
+            // Snapshots: copied when the relationship is set (always on create), never refreshed afterwards.
+            for (Map.Entry<DatabaseMapping, AttributePath> e : copy.entrySet()) {
+                DatabaseMapping via = e.getValue().mappings().get(0);
+                if (action != Action.CREATE && !args.containsKey(via.getAttributeName()) && !fixed.containsKey(via)) {
+                    continue;
+                }
+                Object value = entity;
+                for (DatabaseMapping m : e.getValue().mappings()) {
+                    value = value == null ? null : ((DynamicEntity) value).get(m.getAttributeName());
+                }
+                entity.set(e.getKey().getAttributeName(), value);
+            }
+        }
+
+        /** Checks a caller's arguments for this part: no unknown names, required ones present. */
+        void check(Map<?, ?> args, List<String> alsoKnown, String prefix, String operation) {
+            for (Object a : args.keySet()) {
+                if (!set.containsKey(a) && !alsoKnown.contains(a)) {
+                    List<String> known = new ArrayList<>(alsoKnown);
+                    known.addAll(set.keySet());
+                    throw new ToolException(Code.INVALID_PARAMETER, "Unknown parameter '" + prefix + a + "'; "
+                            + operation + " takes " + known);
+                }
+            }
+            set.forEach((name, f) -> {
+                if (f.required() && args.get(name) == null) {
+                    throw new ToolException(Code.INVALID_PARAMETER, "'" + prefix + name + "' is required");
+                }
+            });
+        }
+
+        void describe(StringBuilder sb) {
+            if (!copy.isEmpty()) {
+                List<String> c = new ArrayList<>();
+                copy.forEach((m, p) -> c.add(m.getAttributeName() + " from " + p.text()));
+                sb.append(" Copies ").append(String.join(", ", c)).append(" when the write is made, so they do not "
+                        + "change later.");
+            }
+            if (!fixed.isEmpty()) {
+                List<String> f = new ArrayList<>();
+                fixed.forEach((m, v) -> f.add(m.getAttributeName() + "="
+                        + (v instanceof Clock c ? c.token : EntityJson.value(v))));
+                sb.append(" Sets ").append(String.join(", ", f)).append('.');
+            }
+        }
+
+        void schema(Map<String, Object> props, List<String> required) {
+            for (Map.Entry<String, Field> e : set.entrySet()) {
+                Field f = e.getValue();
+                props.put(e.getKey(), schemaOf(f.mapping(), f.allowed(), f.description()));
+                if (f.required()) {
+                    required.add(e.getKey());
+                }
+            }
+        }
+    }
+
+    /**
+     * Rows of a one-to-many relationship created with the root.
+     *
+     * @param back the rows' relationship to the root, which the server sets
+     * @param sum root attributes set to the sum, over the rows, of the product of these row attributes
+     */
+    private record ItemsPart(DatabaseMapping collection, DatabaseMapping back, Part part, int min,
+                             Map<DatabaseMapping, List<DatabaseMapping>> sum) {
+        String name() {
+            return collection.getAttributeName();
+        }
+    }
+
     private final WriteDefinition definition;
     private final ClassDescriptor root;
     private final Action action;
     private final Lock lock;
     private final List<String> keyInputs;
-    private final Map<String, Field> set;
-    private final Map<DatabaseMapping, Object> fixed;
-    private final Map<DatabaseMapping, AttributePath> copy;
+    private final Part part;
+    private final List<ItemsPart> items;
 
     private NamedWrite(WriteDefinition definition, ClassDescriptor root, Action action, Lock lock,
-                       List<String> keyInputs, Map<String, Field> set, Map<DatabaseMapping, Object> fixed,
-                       Map<DatabaseMapping, AttributePath> copy) {
+                       List<String> keyInputs, Part part, List<ItemsPart> items) {
         this.definition = definition;
         this.root = root;
         this.action = action;
         this.lock = lock;
         this.keyInputs = keyInputs;
-        this.set = set;
-        this.fixed = fixed;
-        this.copy = copy;
+        this.part = part;
+        this.items = items;
     }
 
     /** Validates the operation against the model (spec 6, item 5b). */
@@ -100,35 +212,10 @@ public final class NamedWrite {
                     + "; remove 'locking: none'");
         }
         try {
-            Map<String, Field> set = new LinkedHashMap<>();
-            for (Map.Entry<String, WriteDefinition.Field> e : def.set().entrySet()) {
-                WriteDefinition.Field f = e.getValue() == null ? new WriteDefinition.Field(null, null, null)
-                        : e.getValue();
-                DatabaseMapping m = settable(root, e.getKey(), lock, action, where);
-                List<Object> allowed = null;
-                if (f.allowed() != null) {
-                    if (!m.isDirectToFieldMapping()) {
-                        throw new DefinitionException(where + "'allowed' applies to basic attributes, not "
-                                + e.getKey());
-                    }
-                    allowed = new ArrayList<>();
-                    for (Object v : f.allowed()) {
-                        allowed.add(Mappings.convert(v, Mappings.attributeType(m), e.getKey()));
-                    }
-                }
-                set.put(e.getKey(), new Field(m, f.required(), allowed, f.description()));
-            }
-            Map<DatabaseMapping, Object> fixed = new LinkedHashMap<>();
-            for (Map.Entry<String, Object> e : def.fixed().entrySet()) {
-                if (set.containsKey(e.getKey())) {
-                    throw new DefinitionException(where + "'" + e.getKey() + "' is under both set and fixed");
-                }
-                DatabaseMapping m = settable(root, e.getKey(), lock, action, where);
-                fixed.put(m, m.isDirectToFieldMapping()
-                        ? Mappings.convert(e.getValue(), Mappings.attributeType(m), e.getKey()) : e.getValue());
-            }
+            Part part = compilePart(root, def.set(), def.fixed(), def.copy(), lock, action, where);
+            Map<String, Field> set = part.set();
             if (action == Action.CREATE && lock != null && lock.through() != null
-                    && !set.containsKey(lock.through().getAttributeName()) && !fixed.containsKey(lock.through())) {
+                    && !set.containsKey(lock.through().getAttributeName()) && !part.fixed().containsKey(lock.through())) {
                 throw new DefinitionException(where + root.getAlias() + " is locked through '"
                         + lock.through().getAttributeName() + "', so a create must set it");
             }
@@ -147,34 +234,149 @@ public final class NamedWrite {
                     throw new DefinitionException(where + "key '" + k + "' is always caller input; remove it from set");
                 }
             }
-            Map<DatabaseMapping, AttributePath> copy = new LinkedHashMap<>();
-            for (Map.Entry<String, String> e : def.copy().entrySet()) {
-                if (set.containsKey(e.getKey()) || def.fixed().containsKey(e.getKey())) {
-                    throw new DefinitionException(where + "'" + e.getKey() + "' is copied, so it cannot also be "
-                            + "under set or fixed");
-                }
-                DatabaseMapping target = settable(root, e.getKey(), lock, action, where);
-                if (!target.isDirectToFieldMapping()) {
-                    throw new DefinitionException(where + "copy target '" + e.getKey() + "' must be a basic attribute");
-                }
-                AttributePath source = AttributePath.resolve(root, e.getValue());
-                DatabaseMapping via = source.mappings().get(0);
-                if (source.mappings().size() < 2 || !source.isBasic() || source.traversesCollection()
-                        || (!set.containsKey(via.getAttributeName()) && !fixed.containsKey(via))) {
-                    throw new DefinitionException(where + "copy source '" + e.getValue() + "' must be a basic "
-                            + "attribute reached through a to-one relationship under set or fixed");
-                }
-                if (!wrapper(source.type()).equals(wrapper(Mappings.attributeType(target)))) {
-                    throw new DefinitionException(where + "cannot copy " + e.getValue() + " ("
-                            + source.type().getSimpleName() + ") into " + e.getKey() + " ("
-                            + Mappings.attributeType(target).getSimpleName() + ")");
-                }
-                copy.put(target, source);
+            List<ItemsPart> items = new ArrayList<>();
+            Set<DatabaseMapping> summed = new java.util.HashSet<>();
+            for (Map.Entry<String, WriteDefinition.Items> e : def.items().entrySet()) {
+                items.add(compileItems(root, e.getKey(), e.getValue(), part, lock, summed, where));
             }
-            return new NamedWrite(def, root, action, lock, keyInputs, set, fixed, copy);
+            for (String k : keyInputs) {
+                if (items.stream().anyMatch(i -> i.name().equals(k))) {
+                    throw new DefinitionException(where + "'" + k + "' is both a key and items");
+                }
+            }
+            return new NamedWrite(def, root, action, lock, keyInputs, part, items);
         } catch (ToolException e) {
             throw new DefinitionException(where + e.getMessage(), e);
         }
+    }
+
+    private static Part compilePart(ClassDescriptor d, Map<String, WriteDefinition.Field> defSet,
+                                    Map<String, Object> defFixed, Map<String, String> defCopy, Lock lock,
+                                    Action action, String where) {
+        Map<String, Field> set = new LinkedHashMap<>();
+        for (Map.Entry<String, WriteDefinition.Field> e : defSet.entrySet()) {
+            WriteDefinition.Field f = e.getValue() == null ? new WriteDefinition.Field(null, null, null)
+                    : e.getValue();
+            DatabaseMapping m = settable(d, e.getKey(), lock, action, where);
+            List<Object> allowed = null;
+            if (f.allowed() != null) {
+                if (!m.isDirectToFieldMapping()) {
+                    throw new DefinitionException(where + "'allowed' applies to basic attributes, not "
+                            + e.getKey());
+                }
+                allowed = new ArrayList<>();
+                for (Object v : f.allowed()) {
+                    allowed.add(Mappings.convert(v, Mappings.attributeType(m), e.getKey()));
+                }
+            }
+            set.put(e.getKey(), new Field(m, f.required(), allowed, f.description()));
+        }
+        Map<DatabaseMapping, Object> fixed = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> e : defFixed.entrySet()) {
+            if (set.containsKey(e.getKey())) {
+                throw new DefinitionException(where + "'" + e.getKey() + "' is under both set and fixed");
+            }
+            DatabaseMapping m = settable(d, e.getKey(), lock, action, where);
+            fixed.put(m, fixedValue(m, e.getKey(), e.getValue(), where));
+        }
+        Map<DatabaseMapping, AttributePath> copy = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : defCopy.entrySet()) {
+            if (set.containsKey(e.getKey()) || defFixed.containsKey(e.getKey())) {
+                throw new DefinitionException(where + "'" + e.getKey() + "' is copied, so it cannot also be "
+                        + "under set or fixed");
+            }
+            DatabaseMapping target = settable(d, e.getKey(), lock, action, where);
+            if (!target.isDirectToFieldMapping()) {
+                throw new DefinitionException(where + "copy target '" + e.getKey() + "' must be a basic attribute");
+            }
+            AttributePath source = AttributePath.resolve(d, e.getValue());
+            DatabaseMapping via = source.mappings().get(0);
+            if (source.mappings().size() < 2 || !source.isBasic() || source.traversesCollection()
+                    || (!set.containsKey(via.getAttributeName()) && !fixed.containsKey(via))) {
+                throw new DefinitionException(where + "copy source '" + e.getValue() + "' must be a basic "
+                        + "attribute reached through a to-one relationship under set or fixed");
+            }
+            if (!wrapper(source.type()).equals(wrapper(Mappings.attributeType(target)))) {
+                throw new DefinitionException(where + "cannot copy " + e.getValue() + " ("
+                        + source.type().getSimpleName() + ") into " + e.getKey() + " ("
+                        + Mappings.attributeType(target).getSimpleName() + ")");
+            }
+            copy.put(target, source);
+        }
+        return new Part(d, set, fixed, copy);
+    }
+
+    private static Object fixedValue(DatabaseMapping m, String name, Object value, String where) {
+        if (!m.isDirectToFieldMapping()) {
+            return value;
+        }
+        Class<?> type = Mappings.attributeType(m);
+        if (Clock.NOW.token.equals(value)) {
+            if (type != LocalDateTime.class && type != OffsetDateTime.class) {
+                throw new DefinitionException(where + "'$now' needs a date-time attribute; '" + name + "' is "
+                        + type.getSimpleName());
+            }
+            return Clock.NOW;
+        }
+        if (Clock.TODAY.token.equals(value)) {
+            if (type != LocalDate.class) {
+                throw new DefinitionException(where + "'$today' needs a date attribute; '" + name + "' is "
+                        + type.getSimpleName());
+            }
+            return Clock.TODAY;
+        }
+        return Mappings.convert(value, type, name);
+    }
+
+    private static ItemsPart compileItems(ClassDescriptor root, String name, WriteDefinition.Items def, Part rootPart,
+                                          Lock rootLock, Set<DatabaseMapping> summed, String where) {
+        DatabaseMapping m = root.getMappingForAttributeName(name);
+        if (!(m instanceof OneToManyMapping otm) || otm.getMappedBy() == null) {
+            throw new DefinitionException(where + "items '" + name + "' must be a one-to-many relationship of "
+                    + root.getAlias() + " mapped by the other side");
+        }
+        ClassDescriptor child = m.getReferenceDescriptor();
+        DatabaseMapping back = child.getMappingForAttributeName(otm.getMappedBy());
+        String at = where + "items '" + name + "': ";
+        if (!child.usesSequenceNumbers()) {
+            throw new DefinitionException(at + child.getAlias() + " needs a key the database generates");
+        }
+        if (def.set().containsKey(back.getAttributeName()) || def.fixed().containsKey(back.getAttributeName())) {
+            throw new DefinitionException(at + "'" + back.getAttributeName() + "' is set by the server to the new "
+                    + root.getAlias());
+        }
+        if (def.min() < 0) {
+            throw new DefinitionException(at + "min cannot be negative");
+        }
+        Part part = compilePart(child, def.set(), def.fixed(), def.copy(), Lock.of(child), Action.CREATE, at);
+        Map<DatabaseMapping, List<DatabaseMapping>> sum = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> e : def.sum().entrySet()) {
+            DatabaseMapping target = settable(root, e.getKey(), rootLock, Action.CREATE, at);
+            if (!target.isDirectToFieldMapping() || !isNumber(Mappings.attributeType(target))
+                    || rootPart.set().containsKey(e.getKey()) || rootPart.fixed().containsKey(target)
+                    || rootPart.copy().containsKey(target) || !summed.add(target)) {
+                throw new DefinitionException(at + "sum target '" + e.getKey() + "' must be a numeric attribute of "
+                        + root.getAlias() + " that nothing else sets");
+            }
+            List<DatabaseMapping> factors = new ArrayList<>();
+            for (String f : e.getValue() == null ? List.<String>of() : e.getValue()) {
+                DatabaseMapping fm = child.getMappingForAttributeName(f);
+                if (fm == null || !fm.isDirectToFieldMapping() || !isNumber(Mappings.attributeType(fm))) {
+                    throw new DefinitionException(at + "sum factor '" + f + "' must be a numeric attribute of "
+                            + child.getAlias());
+                }
+                factors.add(fm);
+            }
+            if (factors.isEmpty()) {
+                throw new DefinitionException(at + "sum '" + e.getKey() + "' needs at least one attribute");
+            }
+            sum.put(target, factors);
+        }
+        return new ItemsPart(m, back, part, def.min(), sum);
+    }
+
+    private static boolean isNumber(Class<?> c) {
+        return Number.class.isAssignableFrom(wrapper(c));
     }
 
     private static Class<?> wrapper(Class<?> c) {
@@ -246,16 +448,19 @@ public final class NamedWrite {
             sb.append(" Pass '").append(lock.inputName()).append("', the version of the ").append(lock.holder().getAlias())
                     .append(" it belongs to; the call checks it and returns the new one in 'locked'.");
         }
-        if (!copy.isEmpty()) {
-            List<String> c = new ArrayList<>();
-            copy.forEach((m, p) -> c.add(m.getAttributeName() + " from " + p.text()));
-            sb.append(" Copies ").append(String.join(", ", c)).append(" when the write is made, so they do not "
-                    + "change later.");
-        }
-        if (!fixed.isEmpty()) {
-            List<String> f = new ArrayList<>();
-            fixed.forEach((m, v) -> f.add(m.getAttributeName() + "=" + EntityJson.value(v)));
-            sb.append(" Sets ").append(String.join(", ", f)).append('.');
+        part.describe(sb);
+        for (ItemsPart i : items) {
+            sb.append(" Creates its ").append(i.name()).append(" (").append(i.part().descriptor().getAlias())
+                    .append(", at least ").append(i.min()).append(") in the same call: pass them as a list in '")
+                    .append(i.name()).append("'. For each one:");
+            int len = sb.length();
+            i.part().describe(sb);
+            if (sb.length() == len) {
+                sb.append(" the attributes listed.");
+            }
+            i.sum().forEach((t, f) -> sb.append(" Sets ").append(t.getAttributeName()).append(" to the sum of ")
+                    .append(String.join(" × ", f.stream().map(DatabaseMapping::getAttributeName).toList()))
+                    .append(" over the ").append(i.name()).append('.'));
         }
         if (definition.condition() != null) {
             sb.append(" Only when: ").append(io.github.djclarke.eclipselink.mcp.tools.Json.write(definition.condition()))
@@ -285,11 +490,25 @@ public final class NamedWrite {
             props.put(lock.inputName(), s);
             required.add(lock.inputName());
         }
-        for (Map.Entry<String, Field> e : set.entrySet()) {
-            Field f = e.getValue();
-            props.put(e.getKey(), schemaOf(f.mapping(), f.allowed(), f.description()));
-            if (f.required()) {
-                required.add(e.getKey());
+        part.schema(props, required);
+        for (ItemsPart i : items) {
+            Map<String, Object> itemProps = new LinkedHashMap<>();
+            List<String> itemRequired = new ArrayList<>();
+            i.part().schema(itemProps, itemRequired);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", "object");
+            item.put("properties", itemProps);
+            item.put("required", itemRequired);
+            item.put("additionalProperties", false);
+            Map<String, Object> list = new LinkedHashMap<>();
+            list.put("type", "array");
+            list.put("description", "The " + i.part().descriptor().getAlias() + " rows to create with the "
+                    + root.getAlias());
+            list.put("minItems", i.min());
+            list.put("items", item);
+            props.put(i.name(), list);
+            if (i.min() > 0) {
+                required.add(i.name());
             }
         }
         Map<String, Object> schema = new LinkedHashMap<>();
@@ -342,20 +561,24 @@ public final class NamedWrite {
             switch (action) {
                 case CREATE -> {
                     DynamicEntity entity = create(em, args);
+                    Map<ItemsPart, List<DynamicEntity>> created = createItems(em, entity, args);
                     holder = lockHolderOf(entity);
                     checkVersion(holder, args);
                     forceIncrement(em, holder);
                     em.persist(entity);
+                    created.values().forEach(rows -> rows.forEach(em::persist));
                     em.flush();
                     checkCondition(em, Mappings.keyValue(root, entity));
                     out.put("item", json.render(entity, root, null, 0));
+                    created.forEach((i, rows) -> out.put(i.name(), rows.stream()
+                            .map(r -> json.render(r, i.part().descriptor(), null, 0)).toList()));
                 }
                 case UPDATE -> {
                     DynamicEntity entity = find(em, root, args.get("id"), "id");
                     holder = lockHolderOf(entity);
                     checkVersion(holder, args);
                     checkCondition(em, args.get("id"));
-                    apply(em, entity, args);
+                    part.apply(em, entity, args, action);
                     forceIncrement(em, holder);
                     em.flush();
                     out.put("item", json.render(entity, root, null, 0));
@@ -403,11 +626,22 @@ public final class NamedWrite {
         if (lock != null && (action != Action.CREATE || lock.through() != null)) {
             known.add(lock.inputName());
         }
-        known.addAll(set.keySet());
-        for (String a : args.keySet()) {
-            if (!known.contains(a)) {
-                throw new ToolException(Code.INVALID_PARAMETER, "Unknown parameter '" + a + "'; "
-                        + definition.name() + " takes " + known);
+        items.forEach(i -> known.add(i.name()));
+        part.check(args, known, "", definition.name());
+        for (ItemsPart i : items) {
+            Object v = args.get(i.name());
+            if (v == null && i.min() == 0) {
+                continue;
+            }
+            if (!(v instanceof List<?> rows) || rows.size() < i.min()) {
+                throw new ToolException(Code.INVALID_PARAMETER, "'" + i.name() + "' must be a list of at least "
+                        + i.min() + " " + i.part().descriptor().getAlias() + (i.min() == 1 ? "" : " rows"));
+            }
+            for (int n = 0; n < rows.size(); n++) {
+                if (!(rows.get(n) instanceof Map<?, ?> row)) {
+                    throw new ToolException(Code.INVALID_PARAMETER, "'" + i.name() + "[" + n + "]' must be an object");
+                }
+                i.part().check(row, List.of(), i.name() + "[" + n + "].", definition.name());
             }
         }
         for (String k : keyInputs) {
@@ -419,11 +653,6 @@ public final class NamedWrite {
         if (lock != null && (action != Action.CREATE || lock.through() != null)) {
             requireValue(args, lock.inputName());
         }
-        set.forEach((name, f) -> {
-            if (f.required()) {
-                requireValue(args, name);
-            }
-        });
     }
 
     private static void requireValue(Map<String, Object> args, String name) {
@@ -446,41 +675,51 @@ public final class NamedWrite {
                 throw new ToolException(Code.ALREADY_EXISTS, root.getAlias() + " " + key + " already exists");
             }
         }
-        apply(em, entity, args);
+        part.apply(em, entity, args, action);
         return entity;
     }
 
-    /** Sets the caller's attributes that are present, then the fixed values. */
-    private void apply(EntityManager em, DynamicEntity entity, Map<String, Object> args) {
-        for (Map.Entry<String, Field> e : set.entrySet()) {
-            if (!args.containsKey(e.getKey())) {
-                continue;
+    /** Builds each items row, links it to the root, and sets the root's sums. Persisted by the caller. */
+    private Map<ItemsPart, List<DynamicEntity>> createItems(EntityManager em, DynamicEntity entity,
+                                                            Map<String, Object> args) {
+        Map<ItemsPart, List<DynamicEntity>> created = new LinkedHashMap<>();
+        for (ItemsPart i : items) {
+            List<DynamicEntity> rows = new ArrayList<>();
+            Object v = args.get(i.name());
+            for (Object o : v == null ? List.of() : (List<?>) v) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> rowArgs = (Map<String, Object>) o;
+                DynamicEntity row = (DynamicEntity) i.part().descriptor().getObjectBuilder().buildNewInstance();
+                row.set(i.back().getAttributeName(), entity);
+                try {
+                    i.part().apply(em, row, rowArgs, Action.CREATE);
+                } catch (ToolException e) {
+                    throw new ToolException(e.code(), i.name() + "[" + rows.size() + "]: " + e.getMessage());
+                }
+                rows.add(row);
             }
-            Field f = e.getValue();
-            Object raw = args.get(e.getKey());
-            entity.set(e.getKey(), resolve(em, f.mapping(), raw, f.allowed()));
-        }
-        for (Map.Entry<DatabaseMapping, Object> e : fixed.entrySet()) {
-            DatabaseMapping m = e.getKey();
-            entity.set(m.getAttributeName(), m.isDirectToFieldMapping() ? e.getValue()
-                    : resolve(em, m, e.getValue(), null));
-        }
-        // Snapshots: copied when the relationship is set (always on create), never refreshed afterwards.
-        for (Map.Entry<DatabaseMapping, AttributePath> e : copy.entrySet()) {
-            DatabaseMapping via = e.getValue().mappings().get(0);
-            if (action != Action.CREATE && !args.containsKey(via.getAttributeName()) && !fixed.containsKey(via)) {
-                continue;
+            List<Object> collection = new ArrayList<>(rows);
+            entity.set(i.name(), collection);
+            for (Map.Entry<DatabaseMapping, List<DatabaseMapping>> s : i.sum().entrySet()) {
+                BigDecimal total = BigDecimal.ZERO;
+                for (DynamicEntity row : rows) {
+                    BigDecimal product = BigDecimal.ONE;
+                    for (DatabaseMapping f : s.getValue()) {
+                        Object n = row.get(f.getAttributeName());
+                        product = n == null ? BigDecimal.ZERO : product.multiply(new BigDecimal(n.toString()));
+                    }
+                    total = total.add(product);
+                }
+                String name = s.getKey().getAttributeName();
+                entity.set(name, Mappings.convert(total, Mappings.attributeType(s.getKey()), name));
             }
-            Object value = entity;
-            for (DatabaseMapping m : e.getValue().mappings()) {
-                value = value == null ? null : ((DynamicEntity) value).get(m.getAttributeName());
-            }
-            entity.set(e.getKey().getAttributeName(), value);
+            created.put(i, rows);
         }
+        return created;
     }
 
-    private Object resolve(EntityManager em, DatabaseMapping m, Object raw, List<Object> allowed) {
-        String name = m.getAttributeName();
+    private static Object resolve(EntityManager em, DatabaseMapping m, Object raw, List<Object> allowed,
+                                  String name) {
         if (raw == null) {
             return null;
         }

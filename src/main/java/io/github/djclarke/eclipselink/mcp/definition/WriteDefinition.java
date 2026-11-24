@@ -17,7 +17,7 @@ import java.util.Set;
 /**
  * A named write operation from {@code writes/*.yaml} (docs/server-definition.md 2.7): one create, update or
  * delete of one root entity, with the attributes the caller may set, values the server sets, and a condition
- * the row must meet. Exposed as a tool only when the descriptor sets {@code tools.writes: true}.
+ * the row must meet. Exposed as a tool only when the descriptor's {@code tools.writes} allows its action on its root.
  *
  * @param set attributes the caller supplies
  * @param fixed values the server sets on every call, in the type contract's formats
@@ -25,6 +25,8 @@ import java.util.Set;
  * @param locking null to require the entity's lock (spec 4.9), or "none"
  * @param copy attributes the server copies from a related entity when it is set, e.g. {@code price:
  *             product.price}, so the row keeps a snapshot of values that may change later
+ * @param items create only: one-to-many relationships whose rows are created in the same call, by name (an
+ *              order's {@code lines})
  */
 public record WriteDefinition(
         String name,
@@ -36,7 +38,8 @@ public record WriteDefinition(
         LinkedHashMap<String, Object> fixed,
         Map<String, Object> condition,
         String locking,
-        LinkedHashMap<String, String> copy) {
+        LinkedHashMap<String, String> copy,
+        LinkedHashMap<String, Items> items) {
 
     public static final Set<String> ACTIONS = Set.of("create", "update", "delete");
 
@@ -44,6 +47,7 @@ public record WriteDefinition(
         set = set == null ? new LinkedHashMap<>() : set;
         fixed = fixed == null ? new LinkedHashMap<>() : fixed;
         copy = copy == null ? new LinkedHashMap<>() : copy;
+        items = items == null ? new LinkedHashMap<>() : items;
     }
 
     /** Tool name for this operation: its name, as written. */
@@ -57,6 +61,28 @@ public record WriteDefinition(
     public record Field(Boolean required, List<Object> allowed, String description) {
         public Field {
             required = required != null && required;
+        }
+    }
+
+    /**
+     * Rows of a one-to-many relationship created with the root (an order's lines). The server sets each row's
+     * relationship back to the root.
+     *
+     * @param min fewest rows a call must pass (default 1)
+     * @param set attributes the caller supplies for each row
+     * @param fixed values the server sets on each row
+     * @param copy snapshot values for each row, as for the root
+     * @param sum root attributes the server sets to a sum over the rows: each one maps to the row attributes
+     *            multiplied per row ({@code total: [quantity, price]})
+     */
+    public record Items(Integer min, LinkedHashMap<String, Field> set, LinkedHashMap<String, Object> fixed,
+                        LinkedHashMap<String, String> copy, LinkedHashMap<String, List<String>> sum) {
+        public Items {
+            min = min == null ? 1 : min;
+            set = set == null ? new LinkedHashMap<>() : set;
+            fixed = fixed == null ? new LinkedHashMap<>() : fixed;
+            copy = copy == null ? new LinkedHashMap<>() : copy;
+            sum = sum == null ? new LinkedHashMap<>() : sum;
         }
     }
 }
