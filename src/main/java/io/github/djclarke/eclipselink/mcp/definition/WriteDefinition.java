@@ -23,6 +23,8 @@ import java.util.Set;
  * @param fixed values the server sets on every call, in the type contract's formats
  * @param condition filter in the shared grammar, values only; checked in the same transaction
  * @param locking null to require the entity's lock (spec 4.9), or "none"
+ * @param copy attributes the server copies from a related entity when it is set, e.g. {@code price:
+ *             product.price}, so the row keeps a snapshot of values that may change later
  */
 public record WriteDefinition(
         String name,
@@ -33,13 +35,15 @@ public record WriteDefinition(
         LinkedHashMap<String, Field> set,
         LinkedHashMap<String, Object> fixed,
         Map<String, Object> condition,
-        String locking) {
+        String locking,
+        LinkedHashMap<String, String> copy) {
 
     public static final Set<String> ACTIONS = Set.of("create", "update", "delete");
 
     public WriteDefinition {
         set = set == null ? new LinkedHashMap<>() : set;
         fixed = fixed == null ? new LinkedHashMap<>() : fixed;
+        copy = copy == null ? new LinkedHashMap<>() : copy;
     }
 
     /** Tool name for this operation: its name, as written. */

@@ -10,7 +10,7 @@
         <table name="CUSTOMER"/>
         <property name="mcp.description" value="A customer account"/>
         <attributes>
-            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="name" attribute-type="String"><column name="NAME"/></basic>
             <basic name="region" attribute-type="String">
                 <column name="REGION"/>
@@ -77,7 +77,14 @@
         <attributes>
             <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="quantity" attribute-type="Integer"><column name="QUANTITY"/></basic>
-            <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
+            <basic name="price" attribute-type="java.math.BigDecimal">
+                <column name="PRICE" precision="10" scale="2"/>
+                <property name="mcp.description" value="Unit price in USD, copied from the product when the line was added"/>
+            </basic>
+            <basic name="productName" attribute-type="String">
+                <column name="PRODUCT_NAME"/>
+                <property name="mcp.description" value="Product name when the line was added"/>
+            </basic>
             <many-to-one name="order" target-entity="sales.Order" fetch="LAZY">
                 <join-column name="ORDER_ID"/>
             </many-to-one>

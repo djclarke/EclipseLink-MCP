@@ -105,7 +105,7 @@ class WriteToolsTest {
         ServerDefinition d = model.definition();
         Descriptor x = d.descriptor();
         Descriptor off = new Descriptor(x.apiVersion(), x.server(), x.connection(), x.model(),
-                new Descriptor.Tools(null, null, null, null, null, null, List.of()), x.limits(), x.transport(),
+                new Descriptor.Tools(null, null, null, null, null, null, Map.of()), x.limits(), x.transport(),
                 x.logging());
         try (ModelRuntime m = ModelRuntime.start(new ServerDefinition(d.directory(), off, d.reports(), d.queries(),
                 d.writes()))) {
@@ -118,43 +118,51 @@ class WriteToolsTest {
     }
 
     /** The order-desk definition with writes enabled for other entities. */
-    private ModelRuntime withWritable(Path definition, String... entities) {
+    private ModelRuntime withWritable(Path definition, Map<String, List<String>> entities) {
         ServerDefinition d = new DefinitionLoader(env).load(definition);
         Descriptor x = d.descriptor();
         Descriptor changed = new Descriptor(x.apiVersion(), x.server(), x.connection(), x.model(),
-                new Descriptor.Tools(null, null, null, null, null, null, List.of(entities)), x.limits(), x.transport(),
+                new Descriptor.Tools(null, null, null, null, null, null, entities), x.limits(), x.transport(),
                 x.logging());
         return ModelRuntime.start(new ServerDefinition(d.directory(), changed, d.reports(), d.queries(), d.writes()));
     }
 
-    @Test
-    void writesAreEnabledPerEntity() {
-        ToolException hidden = assertThrows(ToolException.class, () -> tools.call("update_customer_email",
-                args("id", 2, "version", 1, "email", "new@globex.example")));
-        assertTrue(hidden.getMessage().contains("Customer is not listed under tools.writes"), hidden.getMessage());
+    private static final List<String> ALL = List.of("create", "update", "delete");
 
-        try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION, "Order", "OrderLine", "Customer")) {
+    @Test
+    void writesAreEnabledPerEntityAndAction() {
+        // The demo allows Customer: [create, update]; delete is not listed, and Product is not writable.
+        ToolException hidden = assertThrows(ToolException.class, () -> tools.call("reprice_product",
+                args("id", 1, "version", 1, "price", "30.00")));
+        assertTrue(hidden.getMessage().contains("does not allow update on Product"), hidden.getMessage());
+
+        try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION,
+                Map.of("OrderLine", List.of("create"), "Product", List.of("update")))) {
             ToolService t = new ToolService(m);
-            assertEquals(List.of("add_order_line", "cancel_order", "change_line_quantity", "remove_order_line",
-                            "ship_order", "update_customer_email"),
-                    t.exposedWrites().stream().map(w -> w.definition().name()).toList());
-            Map<?, ?> item = (Map<?, ?>) t.call("update_customer_email",
-                    args("id", 2, "version", 1, "email", "new@globex.example")).get("item");
+            assertEquals(List.of("add_order_line", "reprice_product"),
+                    t.exposedWrites().stream().map(w -> w.definition().name()).toList(),
+                    "remove_order_line and change_line_quantity need delete and update on OrderLine");
+            Map<?, ?> item = (Map<?, ?>) t.call("reprice_product", args("id", 1, "version", 1, "price", "30.00"))
+                    .get("item");
             assertEquals(2, item.get("version"));
-            ToolException tooLong = assertThrows(ToolException.class, () -> t.call("update_customer_email",
-                    args("id", 1, "version", 1, "email", "x".repeat(101) + "@example.com")));
-            assertEquals(ToolException.Code.INVALID_PARAMETER, tooLong.code(), tooLong.getMessage());
         }
     }
 
     @Test
-    void anEntityEnabledForWritesMustBeLocked() throws IOException {
+    void anEntityThatAllowsUpdateOrDeleteMustBeLocked() throws IOException {
         DefinitionException unknown = assertThrows(DefinitionException.class, () -> {
-            try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION, "Invoice")) {
+            try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION, Map.of("Invoice", ALL))) {
                 new ToolService(m);
             }
         });
         assertTrue(unknown.getMessage().contains("unknown entity 'Invoice'"), unknown.getMessage());
+        DefinitionException badAction = assertThrows(DefinitionException.class, () -> {
+            try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION,
+                    Map.of("Order", List.of("upsert")))) {
+                new ToolService(m);
+            }
+        });
+        assertTrue(badAction.getMessage().contains("must list actions"), badAction.getMessage());
 
         Path dir = copyOrderDesk();
         Path orm = dir.resolve("model/eclipselink-orm.xml");
@@ -163,12 +171,16 @@ class WriteToolsTest {
         int version = xml.indexOf("<version ", product);
         int end = xml.indexOf("</version>", version) + "</version>".length();
         Files.writeString(orm, xml.substring(0, version) + xml.substring(end));
+        Files.delete(dir.resolve("writes/reprice-product.yaml")); // itself invalid now: an update needs a lock
         DefinitionException unlocked = assertThrows(DefinitionException.class, () -> {
-            try (ModelRuntime m = withWritable(dir, "Order", "Product")) {
+            try (ModelRuntime m = withWritable(dir, Map.of("Product", List.of("update")))) {
                 new ToolService(m);
             }
         });
         assertTrue(unlocked.getMessage().contains("no optimistic lock"), unlocked.getMessage());
+        try (ModelRuntime m = withWritable(dir, Map.of("Product", List.of("create")))) {
+            new ToolService(m); // create only: a new row cannot conflict, so no lock is needed
+        }
     }
 
     @Test
@@ -177,7 +189,8 @@ class WriteToolsTest {
         tools.tools().stream().filter(t -> t.kind() != ToolService.Kind.READ).forEach(t -> kinds.put(t.name(), t.kind()));
         assertEquals(Map.of("add_order_line", ToolService.Kind.CREATE, "cancel_order", ToolService.Kind.UPDATE,
                 "change_line_quantity", ToolService.Kind.UPDATE, "remove_order_line", ToolService.Kind.DELETE,
-                "ship_order", ToolService.Kind.UPDATE), kinds, "only operations on Order and OrderLine");
+                "ship_order", ToolService.Kind.UPDATE, "create_customer", ToolService.Kind.CREATE,
+                "update_customer_email", ToolService.Kind.UPDATE), kinds, "not reprice_product: Product is read-only");
         McpSchema.ToolAnnotations update = McpServerFactory.annotations(ToolService.Kind.UPDATE);
         assertFalse(update.readOnlyHint());
         assertTrue(update.destructiveHint());
@@ -191,7 +204,8 @@ class WriteToolsTest {
         Map<?, ?> ship = schema("ship_order");
         assertEquals(List.of("id", "version", "shippedAt"), ship.get("required"));
         Map<?, ?> add = schema("add_order_line");
-        assertEquals(List.of("orderVersion", "order", "product", "quantity", "price"), add.get("required"));
+        assertEquals(List.of("orderVersion", "order", "product", "quantity"), add.get("required"));
+        assertFalse(((Map<?, ?>) add.get("properties")).containsKey("price"), "copied from the product");
         assertFalse(((Map<?, ?>) add.get("properties")).containsKey("id"), "the line's key is generated");
         assertEquals(List.of("id", "orderVersion"), schema("remove_order_line").get("required"));
     }
@@ -264,24 +278,58 @@ class WriteToolsTest {
     @Test
     void addingALineChecksAndIncrementsTheOrdersVersion() {
         Map<String, Object> out = call("add_order_line", "order", 1002, "orderVersion", 1, "product", 1,
-                "quantity", 3, "price", "25.00");
+                "quantity", 3);
         Map<?, ?> item = (Map<?, ?>) out.get("item");
         assertEquals(1000L, item.get("id"), "generated by the identity column");
+        assertEquals("25.00", item.get("price"), "copied from the product");
+        assertEquals("Widget", item.get("productName"));
         assertEquals(Map.of("id", 1002L), item.get("order"));
         assertEquals(Map.of("entity", "Order", "id", 1002L, "version", 2), out.get("locked"));
         assertEquals(2, db("SELECT VERSION FROM ORDERS WHERE ID = 1002"));
 
         // A second agent that read the order before the first one's change cannot add its line.
         ToolException e = fails(ToolException.Code.CONFLICT, "add_order_line", "order", 1002, "orderVersion", 1,
-                "product", 2, "quantity", 1, "price", "120.00");
+                "product", 2, "quantity", 1);
         assertEquals(2, e.details().get("currentVersion"));
         assertEquals(3L, db("SELECT COUNT(*) FROM ORDER_LINE WHERE ORDER_ID = 1002"));
     }
 
     @Test
+    void aLineKeepsTheProductDetailsItWasAddedWith() {
+        try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION,
+                Map.of("OrderLine", List.of("create"), "Product", List.of("update")))) {
+            ToolService t = new ToolService(m);
+            t.call("add_order_line", args("order", 1002, "orderVersion", 1, "product", 2, "quantity", 1));
+            t.call("reprice_product", args("id", 2, "version", 1, "price", "150.00"));
+            TestDatabase.execute(env, "UPDATE PRODUCT SET NAME = 'Gadget Pro', VERSION = VERSION + 1 WHERE ID = 2");
+            Map<?, ?> line = (Map<?, ?>) t.call("find_entity", args("entity", "OrderLine", "id", 1000, "depth", 1))
+                    .get("item");
+            assertEquals("120.00", line.get("price"));
+            assertEquals("Gadget", line.get("productName"));
+            assertEquals("Gadget Pro", ((Map<?, ?>) line.get("product")).get("name"));
+            assertEquals("150.00", ((Map<?, ?>) line.get("product")).get("price"));
+        }
+    }
+
+    @Test
+    void createCustomerGeneratesTheIdAndStartsAtVersionOne() {
+        Map<?, ?> item = (Map<?, ?>) call("create_customer", "name", "Stark Industries", "region", "EAST",
+                "email", "orders@stark.example").get("item");
+        assertEquals(100L, item.get("id"), "generated by the identity column");
+        assertEquals(1, item.get("version"));
+        assertEquals("Stark Industries", db("SELECT NAME FROM CUSTOMER WHERE ID = 100"));
+        fails(ToolException.Code.INVALID_PARAMETER, "create_customer", "name", "Wayne", "region", "SOUTH");
+        Map<?, ?> updated = (Map<?, ?>) call("update_customer_email", "id", 100, "version", 1,
+                "email", "ap@stark.example").get("item");
+        assertEquals(2, updated.get("version"));
+        ToolException noDelete = assertThrows(ToolException.class, () -> tools.call("delete_customer", Map.of()));
+        assertEquals(ToolException.Code.INVALID_PARAMETER, noDelete.code());
+    }
+
+    @Test
     void aSequenceOfLineChangesUsesTheReturnedVersionsWithoutReadingAgain() {
         Map<?, ?> locked = (Map<?, ?>) call("add_order_line", "order", 1006, "orderVersion", 1, "product", 4,
-                "quantity", 1, "price", "5.50").get("locked");
+                "quantity", 1).get("locked");
         Object lineId = 1000L;
         locked = (Map<?, ?>) call("change_line_quantity", "id", lineId, "orderVersion", locked.get("version"),
                 "quantity", 4).get("locked");
@@ -297,7 +345,7 @@ class WriteToolsTest {
     @Test
     void lineChangesOnAShippedOrderAreRefused() {
         fails(ToolException.Code.PRECONDITION_FAILED, "add_order_line", "order", 1001, "orderVersion", 1,
-                "product", 1, "quantity", 1, "price", "25.00");
+                "product", 1, "quantity", 1);
         fails(ToolException.Code.PRECONDITION_FAILED, "remove_order_line", "id", 1, "orderVersion", 1);
         assertEquals(1L, db("SELECT COUNT(*) FROM ORDER_LINE WHERE ORDER_ID = 1001"));
         assertEquals(1, db("SELECT VERSION FROM ORDERS WHERE ID = 1001"));
@@ -313,7 +361,7 @@ class WriteToolsTest {
         fails(ToolException.Code.INVALID_FILTER, "ship_order", "id", 1002, "version", 1, "shippedAt", "23/11/2026");
         fails(ToolException.Code.NOT_FOUND, "ship_order", "id", 9999, "version", 1, "shippedAt", "2026-11-23T10:30:00Z");
         fails(ToolException.Code.NOT_FOUND, "add_order_line", "order", 1002, "orderVersion", 1, "product", 99,
-                "quantity", 1, "price", "1.00");
+                "quantity", 1);
     }
 
     @Test
@@ -342,7 +390,7 @@ class WriteToolsTest {
                 root: OrderLine
                 set: { order: { required: true }, product: { required: true }, quantity: {}, price: {} }
                 """);
-        try (ModelRuntime m = withWritable(dir, "Order", "OrderLine", "Customer")) {
+        try (ModelRuntime m = withWritable(dir, Map.of("OrderLine", ALL, "Customer", ALL))) {
             ToolService t = new ToolService(m);
             ToolException denied = assertThrows(ToolException.class,
                     () -> t.call("delete_customer", args("id", 5, "version", 1)));

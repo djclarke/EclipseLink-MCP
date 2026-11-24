@@ -4,8 +4,8 @@ server:
   title: Order desk (sample with writes)
   version: 0.1.0
   instructions: |
-    Sample order desk. Amounts are in USD. Ship or cancel open orders, and add, change or remove lines on
-    open orders. Customers and products are read-only here. Confirm each change with the user first.
+    Sample order desk. Amounts are in USD. Ship or cancel open orders, add, change or remove lines on open
+    orders, and create customers or correct their email. Products are read-only here. Confirm each change with the user first.
 
 connection:
   # The same database as samples/sales-db, through an account allowed to make only these changes.
@@ -20,10 +20,14 @@ model:
   mappings: model/eclipselink-orm.xml
 
 tools:
-  # Entities that may be written (default: none, read-only). Each must be optimistically locked: Order by its
-  # version, OrderLine through its order. Only operations in writes/ on these entities become tools, so
-  # update_customer_email and reprice_product stay hidden until Customer or Product is added here.
-  writes: [Order, OrderLine]
+  # Entities that may be written and the actions allowed on each (default: none, read-only). Update and delete
+  # need an optimistic lock: Order and Customer have their own version, OrderLine is locked through its order.
+  # An operation in writes/ becomes a tool only when its action is listed for its entity, so reprice_product
+  # stays hidden until Product is added here, and customers cannot be deleted.
+  writes:
+    Order: [update]
+    OrderLine: [create, update, delete]
+    Customer: [create, update]
 
 limits:
   defaultPageSize: 50

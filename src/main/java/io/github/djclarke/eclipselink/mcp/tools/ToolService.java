@@ -190,30 +190,45 @@ public final class ToolService {
     }
 
     /**
-     * Write operations exposed as tools: those whose root entity is listed in {@code tools.writes} (none by
-     * default), or every one for the dry-run service.
+     * Write operations exposed as tools: those whose root entity is listed in {@code tools.writes} with the
+     * operation's action (none by default), or every one for the dry-run service.
      */
     public Collection<NamedWrite> exposedWrites() {
-        List<String> writable = model.definition().descriptor().tools().writes();
-        return writes.values().stream().filter(w -> dryRun || writable.contains(w.root().getAlias())).toList();
+        return writes.values().stream().filter(w -> dryRun || allowed(w)).toList();
+    }
+
+    private boolean allowed(NamedWrite w) {
+        return model.definition().descriptor().tools().writes().getOrDefault(w.root().getAlias(), List.of())
+                .contains(w.definition().action());
     }
 
     /**
-     * Every entity enabled for writes exists and is optimistically locked, by its own version or through a
-     * relationship (spec 4.9). The only exception is an entity whose every write operation declares
-     * {@code locking: none}.
+     * Every entity in {@code tools.writes} exists and lists known actions. One that allows update or delete is
+     * optimistically locked, by its own version or through a relationship (spec 4.9), unless every such
+     * operation on it declares {@code locking: none}. A create-only entity needs no lock.
      */
-    private void checkWritableEntities(List<String> writable) {
-        for (String name : writable) {
+    private void checkWritableEntities(Map<String, List<String>> writable) {
+        for (Map.Entry<String, List<String>> e : writable.entrySet()) {
+            String name = e.getKey();
             if (model.entity(name) == null) {
                 throw new DefinitionException("tools.writes names unknown entity '" + name + "'; entities are "
                         + model.entities().keySet());
             }
-            List<NamedWrite> ops = writes.values().stream().filter(w -> w.root().getAlias().equals(name)).toList();
-            if (!locks.containsKey(name) && (ops.isEmpty() || ops.stream().anyMatch(w -> w.lock() == null
-                    && w.definition().locking() == null))) {
-                throw new DefinitionException("tools.writes enables " + name + ", which has no optimistic lock. "
-                        + "Map a version (edit set-version) or lock it through a relationship (edit lock-through)");
+            if (e.getValue().isEmpty() || !WriteDefinition.ACTIONS.containsAll(e.getValue())) {
+                throw new DefinitionException("tools.writes." + name + " must list actions from "
+                        + List.of("create", "update", "delete") + ", e.g. " + name + ": [create, update]; found "
+                        + e.getValue());
+            }
+            boolean changesRows = e.getValue().contains("update") || e.getValue().contains("delete");
+            List<NamedWrite> unlocked = writes.values().stream()
+                    .filter(w -> w.root().getAlias().equals(name) && !w.definition().action().equals("create")
+                            && w.definition().locking() == null)
+                    .toList();
+            if (changesRows && !locks.containsKey(name)
+                    && (!unlocked.isEmpty() || writes.values().stream().noneMatch(w -> w.root().getAlias().equals(name)))) {
+                throw new DefinitionException("tools.writes allows " + e.getValue() + " on " + name + ", which has "
+                        + "no optimistic lock. Map a version (edit set-version) or lock it through a relationship "
+                        + "(edit lock-through), or allow only create");
             }
         }
     }
@@ -244,8 +259,8 @@ public final class ToolService {
         Tool tool = tools.get(name);
         if (tool == null && writes.containsKey(name)) {
             throw new ToolException(ToolException.Code.INVALID_PARAMETER, "Write operation '" + name
-                    + "' is not enabled: " + writes.get(name).root().getAlias()
-                    + " is not listed under tools.writes in the descriptor");
+                    + "' is not enabled: tools.writes in the descriptor does not allow "
+                    + writes.get(name).definition().action() + " on " + writes.get(name).root().getAlias());
         }
         if (tool == null) {
             throw new ToolException(ToolException.Code.INVALID_PARAMETER, "Unknown tool '" + name + "'");

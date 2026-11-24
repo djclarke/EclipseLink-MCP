@@ -8,8 +8,8 @@ Server definitions over the same sample H2 database, a before and after of the
 |---|---|
 | [sales-db-generated](sales-db-generated) | The raw `init` output for every table, untouched. What you get first. |
 | [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. Read-only. |
-| [order-desk](order-desk) | The same model with writes enabled for `Order` and `OrderLine` only (`tools.writes: [Order, OrderLine]`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
-| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: [Customer]`): one operation, `update_customer_email`, locked by the `VERSION` column `init` mapped. |
+| [order-desk](order-desk) | The same model with writes enabled for `Order`, `OrderLine` and `Customer` (`Order: [update]`, `OrderLine: [create, update, delete]`, `Customer: [create, update]` under `tools.writes`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
+| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: {Customer: [create, update]}`): `create_customer` and `update_customer_email`, locked by the `VERSION` column `init` mapped. |
 
 ## sales-db-generated
 
@@ -50,15 +50,28 @@ added under `reports/` and `queries/`. The tests run against this definition.
 
 ## order-desk
 
-A second server over the same database, for a different trust boundary: it can ship and cancel orders, and
-add, change or remove lines on open orders. Each is one file in `writes/` (spec 2.7). Writes are enabled per
-entity: the descriptor lists `tools.writes: [Order, OrderLine]`, so `update_customer_email` and
-`reprice_product` are defined but not exposed until `Customer` or `Product` is added to that list. Every write uses optimistic locking (spec 4.9): `Customer`, `Order` and `Product`
-carry a `version`, and `OrderLine` is locked through its order, so any change to a line checks and increments
-the order's version.
+A second server over the same database, for a different trust boundary: it can ship and cancel orders, add,
+change or remove lines on open orders, and create customers or correct their email. Each is one file in
+`writes/` (spec 2.7). Writes are enabled per entity and action:
+
+```yaml
+tools:
+  writes:
+    Order: [update]
+    OrderLine: [create, update, delete]
+    Customer: [create, update]
+```
+
+so `reprice_product` is defined but not exposed until `Product` is added, and customers cannot be deleted. Every write uses optimistic locking (spec 4.9): `Customer`, `Order` and `Product` carry
+a `version`, and `OrderLine` is locked through its order, so any change to a line checks and increments the
+order's version.
+
+`add_order_line` takes only the order, the product and the quantity. The server copies the product's current
+price and name onto the line (`copy:` in the operation, spec 2.7), so repricing or renaming a product later
+does not change existing orders.
 
 It connects as `MCP_ORDER_DESK` (password `orderdesk` in the sample), which may read every table and change
-only `CUSTOMER`, `PRODUCT`, `ORDERS` (update) and `ORDER_LINE` (insert, update, delete). Its model is a copy of
+only `CUSTOMER` (insert, update), `PRODUCT` and `ORDERS` (update) and `ORDER_LINE` (insert, update, delete). Its model is a copy of
 `sales-db`'s, which a test keeps identical.
 
 ```sh
@@ -74,7 +87,7 @@ database or in a dedicated operation.
 ## sales-customer
 
 The smallest write setup, made with the [configure-server-from-schema](../skills/configure-server-from-schema/SKILL.md)
-skill: `init` for every table, two `describe` edits, one file in `writes/`, and `tools.writes: [Customer]`.
+skill: `init` for every table, two `describe` edits, two files in `writes/`, and `Customer: [create, update]` under `tools.writes`.
 `init` maps each `VERSION` column as an optimistic lock, so no locking edit was needed.
 
 ```sh
@@ -85,7 +98,8 @@ java -jar $JAR edit --definition samples/sales-customer describe Customer "A cus
 java -jar $JAR edit --definition samples/sales-customer describe Customer.email "Contact email address, or null when unknown"
 ```
 
-It connects as `MCP_ORDER_DESK`, which may update `CUSTOMER`. An agent reads a customer, then sends its `version`
+It connects as `MCP_ORDER_DESK`, which may insert and update `CUSTOMER`. A new customer's id comes from the
+identity column and its version starts at 1. An agent reads a customer, then sends its `version`
 back; a stale version gets `CONFLICT`:
 
 ```sh
@@ -95,6 +109,8 @@ java -jar $JAR call --definition samples/sales-customer update_customer_email \
   '{"id":3,"version":1,"email":"ap@initech.example"}'                      # dry run: rolled back
 java -jar $JAR call --definition samples/sales-customer update_customer_email \
   '{"id":3,"version":0,"email":"ap@initech.example"}'                      # CONFLICT
+java -jar $JAR call --definition samples/sales-customer create_customer \
+  '{"name":"Stark Industries","region":"EAST","email":"orders@stark.example"}'  # dry run: id 100, version 1
 ```
 
 A Desktop server running a sample from `target/eclipselink-mcp-server-*.jar` breaks when `mvn package` replaces

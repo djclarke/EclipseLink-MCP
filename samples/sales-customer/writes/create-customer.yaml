@@ -1,0 +1,10 @@
+name: create_customer
+title: Create a customer
+description: "Add a new customer account. The database assigns its id, and it starts at version 1."
+action: create
+root: Customer
+set:
+  name: { required: true, description: "Company or person name" }
+  region: { required: true, allowed: [EAST, WEST, NORTH] }
+  email: { description: "Contact email address, if known" }
+  creditLimit: { description: "Credit limit in USD, if any" }
