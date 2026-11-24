@@ -54,6 +54,9 @@ public final class EditCommand {
         out.println("  unlink <Entity> <relationship>     to-one relationship -> foreign key attribute; drops its inverse");
         out.println("  remove-entity <Entity>             references to it become foreign key attributes");
         out.println("  describe <Entity>[.<attribute>] <text>   set mcp.description (\"\" removes it)");
+        out.println("  set-version <Entity> <attribute>   make an integer attribute the optimistic lock version");
+        out.println("  unset-version <Entity>             make the version a basic attribute again");
+        out.println("  lock-through <Entity> <relationship>   lock writes through a to-one's version (\"\" removes it)");
         out.println("The definition is validated against the database after the change; on failure nothing changes.");
     }
 
@@ -118,6 +121,18 @@ public final class EditCommand {
                     arity(name, a, 2);
                     editor.describe(a.get(0), a.get(1));
                 }
+                case "set-version" -> {
+                    arity(name, a, 2);
+                    editor.setVersion(a.get(0), a.get(1));
+                }
+                case "unset-version" -> {
+                    arity(name, a, 1);
+                    editor.unsetVersion(a.get(0));
+                }
+                case "lock-through" -> {
+                    arity(name, a, 2);
+                    editor.lockThrough(a.get(0), a.get(1));
+                }
                 default -> throw new DefinitionException("Unknown edit operation '" + name + "'");
             }
             editor.write(orm);
@@ -151,11 +166,11 @@ public final class EditCommand {
         }
     }
 
-    /** The ORM file and every report and query file, so a failed edit can be undone. */
+    /** The ORM file and every report, query and write operation file, so a failed edit can be undone. */
     private static void snapshot(Path orm, Path dir, Map<Path, String> snapshot) {
         try {
             snapshot.put(orm, Files.readString(orm));
-            for (String sub : List.of("reports", "queries")) {
+            for (String sub : List.of("reports", "queries", "writes")) {
                 Path d = dir.resolve(sub);
                 if (Files.isDirectory(d)) {
                     try (Stream<Path> files = Files.list(d)) {

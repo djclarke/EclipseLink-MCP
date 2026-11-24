@@ -187,10 +187,20 @@ public final class SchemaReader {
                 }
                 out.add(new SchemaModel.Column(rs.getString("COLUMN_NAME"), rs.getInt("DATA_TYPE"),
                         rs.getString("TYPE_NAME"), rs.getInt("COLUMN_SIZE"), rs.getInt("DECIMAL_DIGITS"),
-                        rs.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls, blankToNull(rs.getString("REMARKS"))));
+                        rs.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls, blankToNull(rs.getString("REMARKS")),
+                        "YES".equalsIgnoreCase(autoIncrement(rs))));
             }
         }
         return out;
+    }
+
+    /** {@code IS_AUTOINCREMENT}, which older drivers do not report. */
+    private static String autoIncrement(ResultSet rs) {
+        try {
+            return rs.getString("IS_AUTOINCREMENT");
+        } catch (SQLException e) {
+            return null;
+        }
     }
 
     private List<String> primaryKey(Found f) throws SQLException {

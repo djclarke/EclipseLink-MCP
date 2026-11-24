@@ -18,4 +18,6 @@ Relationships from foreign keys:
 - Orders.orderLines -> OrderLine (many)
 - Product.orderLines -> OrderLine (many)
 
+Optimistic lock versions: Customer.version (PUBLIC.CUSTOMER.VERSION), Orders.version (PUBLIC.ORDERS.VERSION), Product.version (PUBLIC.PRODUCT.VERSION). The server is read-only; write operations need a version on the entity they change, or a lock through a relationship (spec 4.9).
+
 Environment: `SALES_DB_URL` and `SALES_DB_USER` override the defaults in the descriptor. The password comes from `SALES_DB_PASSWORD`.

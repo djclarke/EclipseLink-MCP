@@ -47,17 +47,20 @@ public final class CallCommand {
     public int run(String[] args) {
         Path definition = null;
         Path drivers = null;
+        boolean commit = false;
         List<String> rest = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--definition" -> definition = i + 1 < args.length ? Path.of(args[++i]) : null;
                 case "--drivers" -> drivers = i + 1 < args.length ? Path.of(args[++i]) : null;
+                case "--commit" -> commit = true;
                 default -> rest.add(args[i]);
             }
         }
         if (definition == null || rest.isEmpty() || rest.size() > 2) {
             err.println("Usage: java -jar eclipselink-mcp-server.jar call --definition <dir> [--drivers <dir>] "
-                    + "<tool> ['<json arguments>']");
+                    + "[--commit] <tool> ['<json arguments>']");
+            err.println("Write tools run as a dry run (rolled back) unless --commit is given.");
             return 2;
         }
         Map<String, Object> arguments = new LinkedHashMap<>();
@@ -72,12 +75,12 @@ public final class CallCommand {
             }
         }
         try (ModelRuntime model = ModelRuntime.start(new DefinitionLoader(environment).load(definition), drivers)) {
-            ToolService tools = new ToolService(model);
+            ToolService tools = new ToolService(model, !commit);
             try {
                 out.println(Json.writePretty(tools.call(rest.get(0), arguments)));
                 return 0;
             } catch (ToolException e) {
-                out.println(Json.writePretty(Map.of("error", Map.of("code", e.code().name(), "message", e.getMessage()))));
+                out.println(Json.writePretty(e.toError()));
                 return 1;
             }
         } catch (DefinitionException e) {

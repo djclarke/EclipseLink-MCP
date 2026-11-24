@@ -78,6 +78,57 @@ class EditCommandTest {
         return code;
     }
 
+    private int commit(String tool, String json) {
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        int code = new CallCommand(ENV::get, new PrintStream(o, true, StandardCharsets.UTF_8), System.err)
+                .run(new String[] {"--definition", dir.toString(), "--commit", tool, json});
+        out = o.toString(StandardCharsets.UTF_8);
+        return code;
+    }
+
+    @Test
+    void setUpOptimisticLocking() throws Exception {
+        assertEquals(Map.of("version", "version", "input", "version"), describe("Orders").get("lock"),
+                "init maps the VERSION column");
+        assertEquals(0, edit("lock-through", "OrderLine", "order"), err);
+        assertTrue(out.contains("OrderLine is locked through order"), out);
+        assertEquals(Map.of("through", "order", "entity", "Orders", "version", "version", "input", "orderVersion"),
+                describe("OrderLine").get("lock"));
+        assertTrue(Files.readString(orm).contains("<property name=\"mcp.lock-through\" value=\"order\"/>"));
+
+        assertEquals(1, edit("lock-through", "Customer", "orders"));
+        assertTrue(err.contains("not an owning to-one"), err);
+        assertEquals(1, edit("unset-version", "Orders"));
+        assertTrue(err.contains("has no version attribute"), err);
+
+        assertEquals(0, edit("lock-through", "OrderLine", ""), err);
+        assertEquals(0, edit("unset-version", "Orders"), err);
+        assertEquals(null, describe("Orders").get("lock"));
+        assertEquals(1, edit("set-version", "Orders", "status"));
+        assertTrue(err.contains("must be an integer"), err);
+        assertEquals(0, edit("set-version", "Orders", "version"), err);
+        assertEquals(Map.of("version", "version", "input", "version"), describe("Orders").get("lock"));
+    }
+
+    @Test
+    void callPreviewsWritesAsADryRun() throws Exception {
+        Files.createDirectories(dir.resolve("writes"));
+        Files.writeString(dir.resolve("writes/rename-customer.yaml"), """
+                name: rename_customer
+                action: update
+                root: Customer
+                set: { name: { required: true } }
+                """);
+        // Writes are not enabled, but a dry run can preview the operation. The generated definition connects as
+        // the read-only account, so the database refuses the change and nothing is written either way.
+        assertEquals(1, call("rename_customer", "{\"id\": 1, \"version\": 1, \"name\": \"Acme\"}"));
+        assertTrue(out.contains("PERMISSION_DENIED"), out);
+        assertEquals(1, commit("rename_customer", "{\"id\": 1, \"version\": 1, \"name\": \"Acme\"}"));
+        assertTrue(out.contains("Customer is not listed under tools.writes"), out);
+        assertEquals(1, call("rename_customer", "{\"id\": 1, \"version\": 7, \"name\": \"Acme\"}"));
+        assertTrue(out.contains("CONFLICT") && out.contains("currentVersion"), out);
+    }
+
     private Map<String, Object> describe(String entity) {
         try (ModelRuntime m = ModelRuntime.start(new DefinitionLoader(ENV::get).load(dir))) {
             return new ToolService(m).describe(m.entity(entity));
@@ -126,7 +177,7 @@ class EditCommandTest {
     @Test
     void trimColumnsButNotKeys() {
         assertEquals(0, edit("remove-attribute", "Customer", "email", "region", "creditLimit"), err);
-        assertEquals(Set.of("id", "name"), Set.copyOf(((List<?>) describe("Customer").get("attributes")).stream()
+        assertEquals(Set.of("id", "name", "version"), Set.copyOf(((List<?>) describe("Customer").get("attributes")).stream()
                 .map(a -> ((Map<?, ?>) a).get("name")).toList()));
         assertEquals(1, edit("remove-attribute", "Customer", "id"));
         assertTrue(err.contains("part of the key"), err);

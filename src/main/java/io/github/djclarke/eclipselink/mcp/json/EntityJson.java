@@ -103,6 +103,11 @@ public final class EntityJson {
         for (String key : Mappings.keyAttributes(descriptor)) {
             json.put(key, value(entity.get(key)));
         }
+        // The version travels with the key, so an agent can always send it back on a write (spec 4.9).
+        String version = Mappings.versionAttribute(descriptor);
+        if (version != null) {
+            json.put(version, value(entity.get(version)));
+        }
         for (Map.Entry<String, Selection> e : selection.children.entrySet()) {
             DatabaseMapping m = descriptor.getMappingForAttributeName(e.getKey());
             Selection child = e.getValue().children.isEmpty() ? null : e.getValue();

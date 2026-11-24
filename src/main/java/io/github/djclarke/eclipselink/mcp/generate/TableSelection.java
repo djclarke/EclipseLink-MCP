@@ -35,6 +35,7 @@ import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
  * types: [TABLE, VIEW]                   # JDBC table types, default TABLE
  * followForeignKeys: { depth: 1, direction: both }   # outgoing | both
  * keys: { ORDER_SUMMARY_V: [ORDER_ID] }  # primary key for tables or views that declare none
+ * versions: { LEGACY: REV_NO, AUDIT: none }   # optimistic lock version column per table, or none
  * maxTables: 200
  * </pre>
  */
@@ -47,7 +48,8 @@ public record TableSelection(
         List<String> types,
         FollowForeignKeys followForeignKeys,
         Map<String, List<String>> keys,
-        Integer maxTables) {
+        Integer maxTables,
+        Map<String, String> versions) {
 
     public static final String FILE = "selection.yaml";
 
@@ -60,6 +62,7 @@ public record TableSelection(
         followForeignKeys = followForeignKeys == null ? new FollowForeignKeys(0, null) : followForeignKeys;
         keys = keys == null ? Map.of() : Map.copyOf(keys);
         maxTables = maxTables == null ? 200 : maxTables;
+        versions = versions == null ? Map.of() : Map.copyOf(versions);
         for (String p : include) {
             pattern(p);
         }
@@ -69,6 +72,26 @@ public record TableSelection(
         if (maxTables < 1) {
             throw new DefinitionException("maxTables must be at least 1");
         }
+    }
+
+    public TableSelection(String catalog, List<String> schemas, List<String> tables, List<String> include,
+                          List<String> exclude, List<String> types, FollowForeignKeys followForeignKeys,
+                          Map<String, List<String>> keys, Integer maxTables) {
+        this(catalog, schemas, tables, include, exclude, types, followForeignKeys, keys, maxTables, null);
+    }
+
+    /**
+     * The version column named for a table in {@code versions}: by plain or qualified name, case-insensitive.
+     * Returns {@code "none"} when detection is switched off for it, or null when not named.
+     */
+    public String versionFor(String schema, String table) {
+        for (Map.Entry<String, String> e : versions.entrySet()) {
+            String k = e.getKey();
+            if (k.equalsIgnoreCase(table) || (schema != null && k.equalsIgnoreCase(schema + "." + table))) {
+                return e.getValue();
+            }
+        }
+        return null;
     }
 
     /**
@@ -125,6 +148,9 @@ public record TableSelection(
         if (!keys.isEmpty()) {
             m.put("keys", keys);
         }
+        if (!versions.isEmpty()) {
+            m.put("versions", versions);
+        }
         m.put("maxTables", maxTables);
         return YAMLMapper.builder().build().writeValueAsString(m);
     }
@@ -140,7 +166,7 @@ public record TableSelection(
                 types == null || types.isEmpty() ? this.types : types,
                 new FollowForeignKeys(depth != null ? depth : followForeignKeys.depth(),
                         direction != null ? direction : followForeignKeys.direction()),
-                keys, maxTables != null ? maxTables : this.maxTables);
+                keys, maxTables != null ? maxTables : this.maxTables, versions);
     }
 
     /** Is anything selected? An empty selection would mean every table, which is never assumed. */

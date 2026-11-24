@@ -59,6 +59,49 @@ public final class TestDatabase {
         return env::get;
     }
 
+    public static final Path ORDER_DESK_DEFINITION = Path.of("samples/order-desk");
+    public static final String ORDER_DESK_USER = "MCP_ORDER_DESK";
+    public static final String ORDER_DESK_PASSWORD = "orderdesk";
+
+    /**
+     * A fresh private copy of the sample database, in memory, for tests that write. Returns environment values
+     * for both sample definitions pointing at it.
+     */
+    public static Function<String, String> freshCopy(String name) {
+        // Kept open for the JVM by the owner's setting; other accounts may not set DB_CLOSE_DELAY themselves.
+        String url = "jdbc:h2:mem:" + name;
+        try (Connection c = DriverManager.getConnection(url + ";DB_CLOSE_DELAY=-1", "sa", "")) {
+            run(c, "/db/sales-db.sql");
+        } catch (SQLException e) {
+            throw new IllegalStateException("Could not create test database " + name, e);
+        }
+        Map<String, String> env = Map.of(
+                "SALES_DB_URL", url,
+                "SALES_DB_USER", READER_USER,
+                "SALES_DB_PASSWORD", READER_PASSWORD,
+                "ORDER_DESK_DB_PASSWORD", ORDER_DESK_PASSWORD);
+        return env::get;
+    }
+
+    /** Runs SQL as the database owner, e.g. to simulate another application changing a row. */
+    public static void execute(Function<String, String> env, String sql) {
+        try (Connection c = DriverManager.getConnection(env.apply("SALES_DB_URL"), "sa", "")) {
+            c.createStatement().execute(sql);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** One value from SQL run as the database owner. */
+    public static Object query(Function<String, String> env, String sql) {
+        try (Connection c = DriverManager.getConnection(env.apply("SALES_DB_URL"), "sa", "");
+             var rs = c.createStatement().executeQuery(sql)) {
+            return rs.next() ? rs.getObject(1) : null;
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     public static ServerDefinition sampleDefinition() {
         return new DefinitionLoader(environment()).load(SAMPLE_DEFINITION);
     }

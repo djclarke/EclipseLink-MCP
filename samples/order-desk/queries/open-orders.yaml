@@ -1,0 +1,12 @@
+name: open_orders
+title: Open orders
+description: "Open orders for one customer, with their lines. Each order and line carries the version that write tools need."
+root: Order
+filter:
+  and:
+    - { path: status, op: eq, value: OPEN }
+    - { path: customer.id, op: eq, param: customerId }
+orderBy: [{ by: orderDate, dir: desc }]
+parameters:
+  customerId: { type: integer, required: true }
+graph: [orderDate, status, total, customer.name, lines.quantity, lines.price, lines.product.name]

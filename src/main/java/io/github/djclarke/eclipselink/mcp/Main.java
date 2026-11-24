@@ -115,6 +115,11 @@ public final class Main {
             out.println("  queries:  " + String.join(", ",
                     tools.queries().stream().map(q -> q.definition().name() + " (batch: "
                             + String.join(", ", q.loadGraph().relationships()) + ")").toList()));
+            out.println("  writes:   " + (definition.writes().isEmpty() ? "none (read-only)"
+                    : String.join(", ", definition.writes().stream().map(w -> w.name() + " (" + w.action() + ")")
+                    .toList()) + "; entities enabled for writes: "
+                    + (definition.descriptor().tools().writes().isEmpty() ? "none (read-only)"
+                    : String.join(", ", definition.descriptor().tools().writes()))));
             out.println("  tools:    " + String.join(", ", tools.tools().stream().map(ToolService.Tool::name).toList()));
             model.close();
             return;

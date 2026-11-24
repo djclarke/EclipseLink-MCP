@@ -28,9 +28,10 @@ public record SchemaModel(List<Table> tables, List<String> warnings) {
 
     /**
      * @param jdbcType a {@link java.sql.Types} constant
+     * @param autoIncrement the database fills the value in (JDBC {@code IS_AUTOINCREMENT}), e.g. an identity
      */
     public record Column(String name, int jdbcType, String typeName, int size, int scale, boolean nullable,
-                         String remarks) {
+                         String remarks, boolean autoIncrement) {
     }
 
     /** A foreign key of this table, by position: {@code columns.get(i)} references {@code targetColumns.get(i)}. */

@@ -9,6 +9,9 @@
  */
 package io.github.djclarke.eclipselink.mcp.tools;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * A tool call failed in a way the agent can act on. Returned to the client as a tool result with
  * {@code isError: true}; see docs/server-definition.md section 4.2 for the codes.
@@ -17,17 +20,49 @@ public class ToolException extends RuntimeException {
 
     public enum Code {
         UNKNOWN_ENTITY, UNKNOWN_ATTRIBUTE, INVALID_FILTER, INVALID_PARAMETER, NOT_FOUND, LIMIT_EXCEEDED, TIMEOUT,
-        DATABASE_ERROR
+        DATABASE_ERROR,
+        /** Write tools: the version sent is not the current one (spec 4.9). */
+        CONFLICT,
+        /** Write tools: the row does not meet the operation's condition. */
+        PRECONDITION_FAILED,
+        /** Write tools: a create whose key already exists. */
+        ALREADY_EXISTS,
+        /** Write tools: the database refused the change (not null, unique, foreign key, check). */
+        CONSTRAINT_VIOLATION,
+        /** Write tools: the server's database account lacks the grant. */
+        PERMISSION_DENIED
     }
 
     private final Code code;
+    private final Map<String, Object> details;
 
     public ToolException(Code code, String message) {
+        this(code, message, null);
+    }
+
+    public ToolException(Code code, String message, Map<String, Object> details) {
         super(message);
         this.code = code;
+        this.details = details;
     }
 
     public Code code() {
         return code;
+    }
+
+    /** Structured details for the agent, or null. */
+    public Map<String, Object> details() {
+        return details;
+    }
+
+    /** The {@code error} object of a failed tool result (spec 4.2). */
+    public Map<String, Object> toError() {
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("code", code.name());
+        error.put("message", getMessage());
+        if (details != null) {
+            error.put("details", details);
+        }
+        return Map.of("error", error);
     }
 }

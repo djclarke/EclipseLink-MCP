@@ -1,0 +1,8 @@
+name: cancel_order
+title: Cancel an order
+description: Cancel an open order.
+action: update
+root: Order
+fixed:
+  status: CANCELLED
+condition: { path: status, op: eq, value: OPEN }

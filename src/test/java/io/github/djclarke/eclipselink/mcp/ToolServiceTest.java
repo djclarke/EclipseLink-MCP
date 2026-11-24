@@ -91,7 +91,7 @@ class ToolServiceTest {
     void findEntityWithSelectPaths() {
         Map<?, ?> item = (Map<?, ?>) tools.call("find_entity", Map.of("entity", "Order", "id", 1006,
                 "select", List.of("total", "customer.name", "lines.quantity", "lines.product.name"))).get("item");
-        assertEquals(Map.of("id", 5L, "name", "Hooli"), item.get("customer"));
+        assertEquals(Map.of("id", 5L, "version", 1, "name", "Hooli"), item.get("customer"), "key and version always come");
         List<?> lines = (List<?>) item.get("lines");
         assertEquals(2, lines.size());
         assertTrue(((Map<?, ?>) lines.get(0)).containsKey("product"));

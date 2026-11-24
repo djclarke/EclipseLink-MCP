@@ -33,7 +33,7 @@ Each instance:
 
 - Arbitrary native SQL execution.
 - Schema changes (DDL) of any kind.
-- Writes (create/update/delete) in the first milestone; designed for but deferred.
+- Generic write tools (create, update or delete any entity or attribute). Writes are named operations only, and off by default (4.10).
 - A UI for authoring mappings.
 - The role-based security model (section 5 beyond 5.0) in the initial POC.
 
@@ -62,6 +62,8 @@ Each instance:
 - FR-9: Support projections (selected attributes only) to keep responses small.
 
 ### 4.3 MCP surface (first milestone, read-only)
+
+A server is read-only unless its definition opts in to named write operations (4.10).
 
 | Tool | Purpose |
 |---|---|
@@ -102,7 +104,7 @@ Decided (2026-11-23): report queries are **named reports only**. MCP callers can
 - **Embeddable library:** let an application with existing JPA entities and a persistence unit expose its model and reports over MCP, reusing its mappings, pool and transport (with an "embed in an app" skill). Not planned for now (decided 2026-11-23).
 - **Multi-definition hosting:** one runtime process serving several definitions, each with its own persistence unit (EntityManagerFactory, session, pool and cache, possibly different databases and vendors), exposed as separate MCP endpoints or with tools namespaced per definition. Saves JVMs but merges trust boundaries in one process, so it waits for the security model (section 5).
 - **Composite definitions:** one model spanning several databases through EclipseLink composite persistence units (SessionBroker), with relationships between member units. Constraints: a single query cannot join across databases, so `query_entities` and named reports run against one member, or results are merged in memory with strict limits; writes across members would need JTA two-phase commit. Read-only use fits first.
-- Writes (`create_entity`, `update_entity`, `delete_entity`) with optimistic locking, validation from constraints, and per-role permission.
+- Writes beyond 4.10: generic per-entity write tools, conditions on create, field-based optimistic locking for legacy tables without a version column (EclipseLink `CHANGED_COLUMNS` or `ALL_COLUMNS` policies), approval through MCP elicitation, and per-role write permission (SR-3).
 - Change notifications as MCP resource subscriptions.
 - **Credential sources:** OS keychain, cloud secret managers (AWS, Azure, GCP, OCI, HashiCorp Vault) and token-based database login, as optional resolver plugins (server-definition 5.3, [roadmap](roadmap.md)).
 
@@ -149,6 +151,24 @@ Agents often need an entity with some of its related data: an order with its cus
 - FR-36: To-one relationships outside the graph are returned as references read from the foreign key, never by a lazy load.
 - FR-37: Per-use-case MOXy shapes are read-only. Object graphs over the shared bindings are the default; a separate binding set per query is an opt-in for shapes that need renaming or flattening (server-definition 4.8).
 
+### 4.10 Writes: opt-in named write operations
+
+Decided (2026-11-23): **a server is read-only by default.** Writes are enabled one business scenario at a time ("ship an order", "add an order line"), with the data owner, through the design-time skill. There are no generic write tools: an agent can change only what a named operation allows, the same way it can only run the reports and queries the definition publishes.
+
+- FR-42: Read-only by default, writes opt-in per entity. The descriptor's `tools.writes` lists the entities that may be written (default none). A write operation (`writes/*.yaml`) becomes a tool only when its entity is listed, and every listed entity must be optimistically locked (FR-44). A server without writes uses a read-only database account (5.0).
+- FR-43: Named write operations. Each file defines one tool: a name chosen for the scenario (`ship_order`), an action (`create`, `update` or `delete`), a root entity, the attributes the caller may set, values the server sets itself, and an optional condition the current row must meet (`status = OPEN`). Callers cannot change anything else.
+- FR-44: Optimistic locking is required. Every update and delete checks a version, and every write increments one. An entity is locked by **its own version attribute**, or **through a to-one relationship** to an entity that has one (an order line is locked through its order). A write operation on an entity with neither fails startup, unless it explicitly declares `locking: none`.
+- FR-45: Stateless locking. The server keeps no state between calls. Versions travel in the JSON: every item a read tool returns includes its version, the caller sends back the version it read, and every write returns the new version so the agent can make a follow-up change without reading again.
+- FR-46: Lock through a parent. A write on a child entity locked through its parent (create, update or delete of an order line) takes the parent's version as input, checks it, and increments it in the same transaction. Two agents changing the same order's lines therefore cannot both succeed with stale data.
+- FR-47: Clear outcomes for agents. A stale version is a `CONFLICT` that names the current version and tells the agent to read again and retry only if the change still makes sense. A failed condition is `PRECONDITION_FAILED`, a create with an existing key `ALREADY_EXISTS`, a database constraint `CONSTRAINT_VIOLATION`, and a missing database grant `PERMISSION_DENIED`. Messages never contain SQL.
+- FR-48: One transaction per call. Each write tool call is one database transaction, committed or rolled back as a whole.
+- FR-49: Fixed types. Write inputs follow the same fixed type contract as reads (server-definition 4.2.1). There are no options to change it.
+- FR-50: Design-time preview. `call` runs write tools as a dry run (rolled back) unless told to commit, so the skill can show the user what an agent would get without changing data.
+- FR-51: Model support. `init` maps version columns it recognizes, and `edit` can set or clear an entity's version attribute and declare that it is locked through a relationship.
+- FR-52: Tool annotations. Write tools are annotated `readOnlyHint: false`, with `destructiveHint: true` for updates and deletes, so MCP clients can ask the user before running them.
+
+The file format and tool behavior are in server-definition 2.7, 4.3 and 4.9.
+
 ## 5. Security requirements
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
@@ -164,6 +184,7 @@ Consequences:
 - Milestone 1 does not need the role-to-policy layer (SR-4, SR-5, SR-8, SR-9, SR-11) to be secure. Those requirements stay in scope for later milestones, when one server serves callers with different permissions.
 - Model building should only see what the account can see: introspection runs as that account, so tables it cannot read do not become entities.
 - Tool exposure (SR-3) still applies, so a read-only deployment never offers write tools even if the account could write.
+- A deployment with write operations (4.10) connects with an account granted exactly the changes those operations make (for example `UPDATE` on ORDERS, `INSERT` and `DELETE` on ORDER_LINE). The database refuses anything else, and the server reports it as `PERMISSION_DENIED`. Read-only and writing deployments over the same database are separate servers with separate accounts.
 - This holds with the internal connection pool (NFR-6) because every pooled connection uses the one account, which matches the single caller in milestone 1.
 - Decided (2026-11-23): this carries into the HTTP, multi-user milestone. The server uses **one shared database account**, and **any authenticated MCP user can read whatever that account can access**. Authentication (SR-1) decides who may connect at all; it does not narrow what they can read.
 - Deferred: per-caller access (separate database identity per caller via EclipseLink exclusive connections or Oracle proxy authentication, or the in-app policy layer in 5.2 to 5.4). Deployments that need different permission sets run separate server instances with separate accounts until then.

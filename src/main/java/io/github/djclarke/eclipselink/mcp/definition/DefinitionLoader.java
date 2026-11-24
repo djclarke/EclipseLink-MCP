@@ -84,7 +84,38 @@ public final class DefinitionLoader {
 
         List<ReportDefinition> reports = loadReports(dir.resolve("reports"));
         List<QueryDefinition> queries = loadQueries(dir.resolve("queries"));
-        return new ServerDefinition(dir, descriptor, reports, queries);
+        List<WriteDefinition> writes = loadWrites(dir.resolve("writes"));
+        return new ServerDefinition(dir, descriptor, reports, queries, writes);
+    }
+
+    private static final Set<String> BUILT_IN_TOOLS = Set.of("list_entities", "describe_entity", "find_entity",
+            "query_entities");
+
+    private List<WriteDefinition> loadWrites(Path writesDir) {
+        List<WriteDefinition> writes = new ArrayList<>();
+        Set<String> names = new HashSet<>();
+        for (Path file : yamlFiles(writesDir)) {
+            WriteDefinition write = convert(readTree(file), WriteDefinition.class, file);
+            require(write.name() != null && NAME.matcher(write.name()).matches(),
+                    file + ": write operation name must match " + NAME.pattern());
+            require(!write.name().startsWith("report_") && !write.name().startsWith("query_")
+                            && !BUILT_IN_TOOLS.contains(write.name()),
+                    file + ": write operation name '" + write.name() + "' clashes with a read tool name");
+            require(names.add(write.name()), file + ": duplicate write operation name " + write.name());
+            require(write.action() != null && WriteDefinition.ACTIONS.contains(write.action()),
+                    file + ": action must be one of " + WriteDefinition.ACTIONS);
+            require(write.root() != null, file + ": write operation needs a root entity");
+            require(write.locking() == null || "none".equals(write.locking()),
+                    file + ": locking can only be 'none' (omit it to use the entity's lock)");
+            if ("delete".equals(write.action())) {
+                require(write.set().isEmpty() && write.fixed().isEmpty(), file + ": a delete takes no set or fixed");
+            } else {
+                require(!write.set().isEmpty() || !write.fixed().isEmpty(),
+                        file + ": a " + write.action() + " needs attributes under set or fixed");
+            }
+            writes.add(write);
+        }
+        return writes;
     }
 
     private List<QueryDefinition> loadQueries(Path queriesDir) {

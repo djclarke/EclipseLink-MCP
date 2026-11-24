@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Dynamic (VIRTUAL) entities for the sales-db sample. No Java classes are needed. -->
+<entity-mappings xmlns="http://www.eclipse.org/eclipselink/xsds/persistence/orm"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xsi:schemaLocation="http://www.eclipse.org/eclipselink/xsds/persistence/orm http://www.eclipse.org/eclipselink/xsds/eclipselink_orm_5_0.xsd"
+                 version="5.0">
+    <package>sales</package>
+
+    <entity class="Customer" access="VIRTUAL">
+        <table name="CUSTOMER"/>
+        <property name="mcp.description" value="A customer account"/>
+        <attributes>
+            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <basic name="name" attribute-type="String"><column name="NAME"/></basic>
+            <basic name="region" attribute-type="String">
+                <column name="REGION"/>
+                <property name="mcp.description" value="Sales region: EAST, WEST or NORTH"/>
+            </basic>
+            <basic name="email" attribute-type="String"><column name="EMAIL"/></basic>
+            <basic name="creditLimit" attribute-type="java.math.BigDecimal">
+                <column name="CREDIT_LIMIT" precision="20" scale="4"/>
+                <property name="mcp.description" value="Credit limit in USD"/>
+            </basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
+            <one-to-many name="orders" target-entity="sales.Order" mapped-by="customer" attribute-type="java.util.List"/>
+        </attributes>
+    </entity>
+
+    <entity class="Product" access="VIRTUAL">
+        <table name="PRODUCT"/>
+        <property name="mcp.description" value="A product that can be ordered"/>
+        <attributes>
+            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <basic name="name" attribute-type="String"><column name="NAME"/></basic>
+            <basic name="category" attribute-type="String"><column name="CATEGORY"/></basic>
+            <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
+            <basic name="weightKg" attribute-type="Double"><column name="WEIGHT_KG"/></basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
+        </attributes>
+    </entity>
+
+    <entity class="Order" access="VIRTUAL">
+        <table name="ORDERS"/>
+        <property name="mcp.description" value="A customer order"/>
+        <attributes>
+            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <basic name="orderDate" attribute-type="java.time.LocalDate"><column name="ORDER_DATE"/></basic>
+            <basic name="status" attribute-type="String">
+                <column name="STATUS"/>
+                <property name="mcp.description" value="OPEN, SHIPPED or CANCELLED"/>
+            </basic>
+            <basic name="total" attribute-type="java.math.BigDecimal">
+                <column name="TOTAL" precision="12" scale="2"/>
+                <property name="mcp.description" value="Order total in USD"/>
+            </basic>
+            <basic name="createdAt" attribute-type="java.time.LocalDateTime">
+                <column name="CREATED_AT"/>
+                <property name="mcp.description" value="When the order was entered (database local time)"/>
+            </basic>
+            <basic name="shippedAt" attribute-type="java.time.OffsetDateTime">
+                <column name="SHIPPED_AT"/>
+                <property name="mcp.description" value="When the order shipped, with its time zone offset"/>
+            </basic>
+            <version name="version" attribute-type="Integer"><column name="VERSION"/></version>
+            <many-to-one name="customer" target-entity="sales.Customer" fetch="LAZY">
+                <join-column name="CUSTOMER_ID"/>
+            </many-to-one>
+            <one-to-many name="lines" target-entity="sales.OrderLine" mapped-by="order" attribute-type="java.util.List"/>
+        </attributes>
+    </entity>
+
+    <entity class="OrderLine" access="VIRTUAL">
+        <table name="ORDER_LINE"/>
+        <property name="mcp.description" value="One product line on an order"/>
+        <!-- ORDER_LINE has no version column: writes to a line check and increment its order's version. -->
+        <property name="mcp.lock-through" value="order"/>
+        <attributes>
+            <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
+            <basic name="quantity" attribute-type="Integer"><column name="QUANTITY"/></basic>
+            <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
+            <many-to-one name="order" target-entity="sales.Order" fetch="LAZY">
+                <join-column name="ORDER_ID"/>
+            </many-to-one>
+            <many-to-one name="product" target-entity="sales.Product" fetch="LAZY">
+                <join-column name="PRODUCT_ID"/>
+            </many-to-one>
+        </attributes>
+    </entity>
+</entity-mappings>

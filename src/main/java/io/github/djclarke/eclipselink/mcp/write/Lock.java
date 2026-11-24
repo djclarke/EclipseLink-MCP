@@ -1,0 +1,103 @@
+/*
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License v. 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0,
+ * or the Eclipse Distribution License v. 1.0 which is available at
+ * http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+ */
+package io.github.djclarke.eclipselink.mcp.write;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+
+import org.eclipse.persistence.descriptors.ClassDescriptor;
+import org.eclipse.persistence.mappings.DatabaseMapping;
+import org.eclipse.persistence.mappings.OneToOneMapping;
+
+import io.github.djclarke.eclipselink.mcp.definition.DefinitionException;
+import io.github.djclarke.eclipselink.mcp.query.Mappings;
+
+/**
+ * How an entity is optimistically locked (docs/server-definition.md 4.9): by its own version attribute, or
+ * through an owning to-one relationship to an entity that has one (descriptor property {@code mcp.lock-through}).
+ *
+ * @param entity the entity written
+ * @param through the relationship the lock is held through, or null for the entity's own version
+ * @param holder the entity whose version is checked and incremented
+ * @param versionAttribute the holder's version attribute
+ */
+public record Lock(ClassDescriptor entity, DatabaseMapping through, ClassDescriptor holder, String versionAttribute) {
+
+    /** ORM entity property naming the to-one relationship an entity is locked through. */
+    public static final String LOCK_THROUGH_PROPERTY = "mcp.lock-through";
+
+    private static final Set<Class<?>> INTEGER_TYPES = Set.of(Integer.class, int.class, Long.class, long.class);
+
+    /** The name of the version input of write tools: {@code version}, or {@code orderVersion} through {@code order}. */
+    public String inputName() {
+        return through == null ? versionAttribute : through.getAttributeName() + "Version";
+    }
+
+    public Class<?> versionType() {
+        return Mappings.attributeType(holder.getMappingForAttributeName(versionAttribute));
+    }
+
+    /** For describe_entity. */
+    public Map<String, Object> describe() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (through == null) {
+            m.put("version", versionAttribute);
+        } else {
+            m.put("through", through.getAttributeName());
+            m.put("entity", holder.getAlias());
+            m.put("version", versionAttribute);
+        }
+        m.put("input", inputName());
+        return m;
+    }
+
+    /**
+     * The entity's lock, or null when it has none. Validates the model: versions are integers, and a
+     * lock-through names an owning to-one relationship to an entity with its own version.
+     */
+    public static Lock of(ClassDescriptor d) {
+        String own = Mappings.versionAttribute(d);
+        Object throughName = d.getProperty(LOCK_THROUGH_PROPERTY);
+        String where = d.getAlias() + ": ";
+        if (own != null) {
+            checkInteger(d, own);
+            if (throughName != null) {
+                throw new DefinitionException(where + "has its own version '" + own + "' and " + LOCK_THROUGH_PROPERTY
+                        + " '" + throughName + "'; use one or the other");
+            }
+            return new Lock(d, null, d, own);
+        }
+        if (throughName == null || throughName.toString().isBlank()) {
+            return null;
+        }
+        DatabaseMapping m = d.getMappingForAttributeName(throughName.toString().strip());
+        if (!(m instanceof OneToOneMapping o) || !o.isForeignKeyRelationship()) {
+            throw new DefinitionException(where + LOCK_THROUGH_PROPERTY + " '" + throughName
+                    + "' must name an owning to-one relationship");
+        }
+        ClassDescriptor holder = m.getReferenceDescriptor();
+        String version = Mappings.versionAttribute(holder);
+        if (version == null) {
+            throw new DefinitionException(where + "is locked through '" + throughName + "', but "
+                    + holder.getAlias() + " has no version attribute");
+        }
+        checkInteger(holder, version);
+        return new Lock(d, m, holder, version);
+    }
+
+    private static void checkInteger(ClassDescriptor d, String attribute) {
+        Class<?> type = Mappings.attributeType(d.getMappingForAttributeName(attribute));
+        if (!INTEGER_TYPES.contains(type)) {
+            throw new DefinitionException(d.getAlias() + "." + attribute + ": only integer version attributes are "
+                    + "supported, not " + type.getSimpleName());
+        }
+    }
+}
