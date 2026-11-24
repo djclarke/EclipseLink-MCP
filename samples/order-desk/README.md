@@ -1,14 +1,15 @@
 # order-desk (writes enabled)
 
-The [sales-db](../sales-db) model with write operations switched on: one file per operation in `writes/`,
-exposed because the descriptor sets `tools.writes: true`. See [../README.md](../README.md#order-desk).
+The [sales-db](../sales-db) model with writes enabled for two entities: the descriptor lists
+`tools.writes: [Order, OrderLine]`, so the operations in `writes/` on those entities become tools and the rest
+stay hidden. See [../README.md](../README.md#order-desk).
 
-| Tool | Action | Entity | Lock |
-|---|---|---|---|
-| `ship_order` | update | Order | `version` |
-| `cancel_order` | update | Order | `version` |
-| `update_customer_email` | update | Customer | `version` |
-| `reprice_product` | update | Product | `version` |
-| `add_order_line` | create | OrderLine | `orderVersion` (checked and incremented) |
-| `change_line_quantity` | update | OrderLine | `orderVersion` |
-| `remove_order_line` | delete | OrderLine | `orderVersion` |
+| Tool | Action | Entity | Lock | Exposed |
+|---|---|---|---|---|
+| `ship_order` | update | Order | `version` | yes |
+| `cancel_order` | update | Order | `version` | yes |
+| `add_order_line` | create | OrderLine | `orderVersion` (checked and incremented) | yes |
+| `change_line_quantity` | update | OrderLine | `orderVersion` | yes |
+| `remove_order_line` | delete | OrderLine | `orderVersion` | yes |
+| `update_customer_email` | update | Customer | `version` | no: add `Customer` to `tools.writes` |
+| `reprice_product` | update | Product | `version` | no: add `Product` to `tools.writes` |

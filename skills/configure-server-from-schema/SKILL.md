@@ -16,7 +16,7 @@ The file formats are specified in `docs/server-definition.md` in this repository
 - **Never handle the password.** Do not ask for it in chat, and never put it in a file or a command line. The user exports it in their own shell, and you pass only the variable's name with `--password-env`.
 - **Never select a whole database** unless the user asks for every table, and the database is small. Select precisely (step 2).
 - **One change at a time:** run it, show the result, and agree the next change.
-- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then add one named write operation per scenario (step 7), never a general "edit anything" operation.
+- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then enable only the entities that change, each with optimistic locking, and add one named write operation per scenario (step 7), never a general "edit anything" operation.
 - **Never commit a write while designing.** `call` runs write tools as a dry run (rolled back). Do not pass `--commit`.
 
 Commands, with `$JAR` the runtime JAR (`target/eclipselink-mcp-server-*.jar` after `mvn package`):
@@ -144,7 +144,7 @@ If validation fails, the message names the file and the problem: an unknown path
 
 ## 7. Write scenarios (only when the user asks)
 
-A server stays read-only unless its descriptor sets `tools.writes: true`. When the user wants agents to change data, work out the **specific scenarios** first ("ship an open order", "add a line to an open order", "correct a customer's email"). Each becomes one file in `writes/` (spec 2.7), and agents can do exactly those changes and nothing else.
+A server stays read-only unless its descriptor lists entities under `tools.writes`. Writes are enabled per entity, and only on entities that are optimistically locked. When the user wants agents to change data, work out the **specific scenarios** first ("ship an open order", "add a line to an open order", "correct a customer's email"). Each becomes one file in `writes/` (spec 2.7), and agents can do exactly those changes and nothing else.
 
 **a. Locking comes first.** Every write is checked with optimistic locking (spec 4.9), and the server keeps no state between calls: the version goes out in every JSON item, comes back in the write call, and the write returns the new one. Before writing any operation, check how each entity it changes is locked, with `describe_entity` (its `lock`):
 
@@ -196,7 +196,14 @@ java -jar $JAR call --definition defs/sales ship_order '{"id":1002,"version":1,"
 
 The result has `"dryRun": true` and nothing is written. Also show a stale version (`"version": 0`) so the user sees the `CONFLICT` an agent gets, and a row that fails the condition (`PRECONDITION_FAILED`). A `PERMISSION_DENIED` means the account lacks a grant.
 
-**d. Switch writes on.** Only when the user confirms, set `tools.writes: true` in the descriptor. Then tell them:
+**d. Enable writes for those entities.** Only when the user confirms, list the entities the operations change in the descriptor, and nothing more:
+
+```yaml
+tools:
+  writes: [Order, OrderLine]      # Customer and Product stay read-only
+```
+
+Validate again: startup fails if a listed entity has no lock, which sends you back to step a. Operations on entities not listed stay hidden. Then tell the user:
 
 - The server needs a database account with exactly the grants these operations need (for example `UPDATE` on ORDERS, `INSERT, UPDATE, DELETE` on ORDER_LINE), not the read-only one. Often this is a separate server definition with its own account, so read-only agents keep a read-only server.
 - MCP clients ask the user before running tools marked destructive (updates and deletes).

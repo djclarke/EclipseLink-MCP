@@ -105,15 +105,70 @@ class WriteToolsTest {
         ServerDefinition d = model.definition();
         Descriptor x = d.descriptor();
         Descriptor off = new Descriptor(x.apiVersion(), x.server(), x.connection(), x.model(),
-                new Descriptor.Tools(null, null, null, null, null, null, null), x.limits(), x.transport(), x.logging());
+                new Descriptor.Tools(null, null, null, null, null, null, List.of()), x.limits(), x.transport(),
+                x.logging());
         try (ModelRuntime m = ModelRuntime.start(new ServerDefinition(d.directory(), off, d.reports(), d.queries(),
                 d.writes()))) {
             ToolService readOnly = new ToolService(m);
             assertTrue(readOnly.tools().stream().allMatch(t -> t.kind() == ToolService.Kind.READ));
             ToolException e = assertThrows(ToolException.class, () -> readOnly.call("ship_order", Map.of()));
-            assertTrue(e.getMessage().contains("tools.writes: true"), e.getMessage());
+            assertTrue(e.getMessage().contains("tools.writes"), e.getMessage());
             assertTrue(McpServerFactory.instructions(m, readOnly).contains("read-only server"));
         }
+    }
+
+    /** The order-desk definition with writes enabled for other entities. */
+    private ModelRuntime withWritable(Path definition, String... entities) {
+        ServerDefinition d = new DefinitionLoader(env).load(definition);
+        Descriptor x = d.descriptor();
+        Descriptor changed = new Descriptor(x.apiVersion(), x.server(), x.connection(), x.model(),
+                new Descriptor.Tools(null, null, null, null, null, null, List.of(entities)), x.limits(), x.transport(),
+                x.logging());
+        return ModelRuntime.start(new ServerDefinition(d.directory(), changed, d.reports(), d.queries(), d.writes()));
+    }
+
+    @Test
+    void writesAreEnabledPerEntity() {
+        ToolException hidden = assertThrows(ToolException.class, () -> tools.call("update_customer_email",
+                args("id", 2, "version", 1, "email", "new@globex.example")));
+        assertTrue(hidden.getMessage().contains("Customer is not listed under tools.writes"), hidden.getMessage());
+
+        try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION, "Order", "OrderLine", "Customer")) {
+            ToolService t = new ToolService(m);
+            assertEquals(List.of("add_order_line", "cancel_order", "change_line_quantity", "remove_order_line",
+                            "ship_order", "update_customer_email"),
+                    t.exposedWrites().stream().map(w -> w.definition().name()).toList());
+            Map<?, ?> item = (Map<?, ?>) t.call("update_customer_email",
+                    args("id", 2, "version", 1, "email", "new@globex.example")).get("item");
+            assertEquals(2, item.get("version"));
+            ToolException tooLong = assertThrows(ToolException.class, () -> t.call("update_customer_email",
+                    args("id", 1, "version", 1, "email", "x".repeat(101) + "@example.com")));
+            assertEquals(ToolException.Code.INVALID_PARAMETER, tooLong.code(), tooLong.getMessage());
+        }
+    }
+
+    @Test
+    void anEntityEnabledForWritesMustBeLocked() throws IOException {
+        DefinitionException unknown = assertThrows(DefinitionException.class, () -> {
+            try (ModelRuntime m = withWritable(TestDatabase.ORDER_DESK_DEFINITION, "Invoice")) {
+                new ToolService(m);
+            }
+        });
+        assertTrue(unknown.getMessage().contains("unknown entity 'Invoice'"), unknown.getMessage());
+
+        Path dir = copyOrderDesk();
+        Path orm = dir.resolve("model/eclipselink-orm.xml");
+        String xml = Files.readString(orm);
+        int product = xml.indexOf("<entity class=\"Product\"");
+        int version = xml.indexOf("<version ", product);
+        int end = xml.indexOf("</version>", version) + "</version>".length();
+        Files.writeString(orm, xml.substring(0, version) + xml.substring(end));
+        DefinitionException unlocked = assertThrows(DefinitionException.class, () -> {
+            try (ModelRuntime m = withWritable(dir, "Order", "Product")) {
+                new ToolService(m);
+            }
+        });
+        assertTrue(unlocked.getMessage().contains("no optimistic lock"), unlocked.getMessage());
     }
 
     @Test
@@ -122,8 +177,7 @@ class WriteToolsTest {
         tools.tools().stream().filter(t -> t.kind() != ToolService.Kind.READ).forEach(t -> kinds.put(t.name(), t.kind()));
         assertEquals(Map.of("add_order_line", ToolService.Kind.CREATE, "cancel_order", ToolService.Kind.UPDATE,
                 "change_line_quantity", ToolService.Kind.UPDATE, "remove_order_line", ToolService.Kind.DELETE,
-                "reprice_product", ToolService.Kind.UPDATE, "ship_order", ToolService.Kind.UPDATE,
-                "update_customer_email", ToolService.Kind.UPDATE), kinds);
+                "ship_order", ToolService.Kind.UPDATE), kinds, "only operations on Order and OrderLine");
         McpSchema.ToolAnnotations update = McpServerFactory.annotations(ToolService.Kind.UPDATE);
         assertFalse(update.readOnlyHint());
         assertTrue(update.destructiveHint());
@@ -180,20 +234,21 @@ class WriteToolsTest {
 
     @Test
     void aStaleVersionIsAConflictAndChangesNothing() {
-        call("update_customer_email", "id", 2, "version", 1, "email", "new@globex.example");
-        ToolException e = fails(ToolException.Code.CONFLICT, "update_customer_email", "id", 2, "version", 1,
-                "email", "other@globex.example");
-        assertEquals(Map.of("entity", "Customer", "id", 2L, "expectedVersion", 1, "currentVersion", 2), e.details());
+        call("ship_order", "id", 1006, "version", 1, "shippedAt", "2026-11-23T10:30:00Z");
+        // A second agent read the order while it was open, and tries to cancel it with that version.
+        ToolException e = fails(ToolException.Code.CONFLICT, "cancel_order", "id", 1006, "version", 1);
+        assertEquals(Map.of("entity", "Order", "id", 1006L, "expectedVersion", 1, "currentVersion", 2), e.details());
         assertTrue(e.getMessage().contains("Read it again"), e.getMessage());
-        assertEquals("new@globex.example", db("SELECT EMAIL FROM CUSTOMER WHERE ID = 2"));
+        assertEquals("SHIPPED", db("SELECT STATUS FROM ORDERS WHERE ID = 1006"));
     }
 
     @Test
     void aChangeByAnotherApplicationIsDetected() {
-        TestDatabase.execute(env, "UPDATE PRODUCT SET PRICE = 26.00, VERSION = VERSION + 1 WHERE ID = 1");
-        fails(ToolException.Code.CONFLICT, "reprice_product", "id", 1, "version", 1, "price", "27.50");
-        Map<?, ?> item = (Map<?, ?>) call("reprice_product", "id", 1, "version", 2, "price", "27.50").get("item");
-        assertEquals("27.50", item.get("price"));
+        TestDatabase.execute(env, "UPDATE ORDERS SET TOTAL = 13000.00, VERSION = VERSION + 1 WHERE ID = 1005");
+        fails(ToolException.Code.CONFLICT, "ship_order", "id", 1005, "version", 1, "shippedAt", "2026-11-23T10:30:00Z");
+        Map<?, ?> item = (Map<?, ?>) call("ship_order", "id", 1005, "version", 2,
+                "shippedAt", "2026-11-23T10:30:00Z").get("item");
+        assertEquals("13000.00", item.get("total"));
         assertEquals(3, item.get("version"));
     }
 
@@ -259,8 +314,6 @@ class WriteToolsTest {
         fails(ToolException.Code.NOT_FOUND, "ship_order", "id", 9999, "version", 1, "shippedAt", "2026-11-23T10:30:00Z");
         fails(ToolException.Code.NOT_FOUND, "add_order_line", "order", 1002, "orderVersion", 1, "product", 99,
                 "quantity", 1, "price", "1.00");
-        fails(ToolException.Code.INVALID_PARAMETER, "update_customer_email", "id", 1, "version", 1,
-                "email", "x".repeat(101) + "@example.com");
     }
 
     @Test
@@ -289,7 +342,7 @@ class WriteToolsTest {
                 root: OrderLine
                 set: { order: { required: true }, product: { required: true }, quantity: {}, price: {} }
                 """);
-        try (ModelRuntime m = ModelRuntime.start(new DefinitionLoader(env).load(dir))) {
+        try (ModelRuntime m = withWritable(dir, "Order", "OrderLine", "Customer")) {
             ToolService t = new ToolService(m);
             ToolException denied = assertThrows(ToolException.class,
                     () -> t.call("delete_customer", args("id", 5, "version", 1)));

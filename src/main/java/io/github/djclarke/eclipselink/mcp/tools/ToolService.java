@@ -180,19 +180,42 @@ public final class ToolService {
                         q.inputSchema(limits.maxPageSize()), args -> runQuery(q, args)));
             }
         }
-        // The dry-run service (the call command) can preview operations before tools.writes is switched on.
-        if (enabled.writes() || dryRun) {
-            for (NamedWrite w : writes.values()) {
-                WriteDefinition def = w.definition();
-                add(new Tool(def.toolName(), def.title() == null ? def.name() : def.title(), w.toolDescription(),
-                        w.inputSchema(), args -> runWrite(w, args), Kind.valueOf(w.action().name())));
-            }
+        checkWritableEntities(enabled.writes());
+        // The dry-run service (the call command) can preview operations before their entity is enabled.
+        for (NamedWrite w : exposedWrites()) {
+            WriteDefinition def = w.definition();
+            add(new Tool(def.toolName(), def.title() == null ? def.name() : def.title(), w.toolDescription(),
+                    w.inputSchema(), args -> runWrite(w, args), Kind.valueOf(w.action().name())));
         }
     }
 
-    /** Write operations exposed as tools (none unless {@code tools.writes} is on). */
+    /**
+     * Write operations exposed as tools: those whose root entity is listed in {@code tools.writes} (none by
+     * default), or every one for the dry-run service.
+     */
     public Collection<NamedWrite> exposedWrites() {
-        return model.definition().descriptor().tools().writes() || dryRun ? writes.values() : List.of();
+        List<String> writable = model.definition().descriptor().tools().writes();
+        return writes.values().stream().filter(w -> dryRun || writable.contains(w.root().getAlias())).toList();
+    }
+
+    /**
+     * Every entity enabled for writes exists and is optimistically locked, by its own version or through a
+     * relationship (spec 4.9). The only exception is an entity whose every write operation declares
+     * {@code locking: none}.
+     */
+    private void checkWritableEntities(List<String> writable) {
+        for (String name : writable) {
+            if (model.entity(name) == null) {
+                throw new DefinitionException("tools.writes names unknown entity '" + name + "'; entities are "
+                        + model.entities().keySet());
+            }
+            List<NamedWrite> ops = writes.values().stream().filter(w -> w.root().getAlias().equals(name)).toList();
+            if (!locks.containsKey(name) && (ops.isEmpty() || ops.stream().anyMatch(w -> w.lock() == null
+                    && w.definition().locking() == null))) {
+                throw new DefinitionException("tools.writes enables " + name + ", which has no optimistic lock. "
+                        + "Map a version (edit set-version) or lock it through a relationship (edit lock-through)");
+            }
+        }
     }
 
     private Map<String, Object> runWrite(NamedWrite write, Map<String, Object> args) {
@@ -221,7 +244,8 @@ public final class ToolService {
         Tool tool = tools.get(name);
         if (tool == null && writes.containsKey(name)) {
             throw new ToolException(ToolException.Code.INVALID_PARAMETER, "Write operation '" + name
-                    + "' is not enabled: this server is read-only until the descriptor sets tools.writes: true");
+                    + "' is not enabled: " + writes.get(name).root().getAlias()
+                    + " is not listed under tools.writes in the descriptor");
         }
         if (tool == null) {
             throw new ToolException(ToolException.Code.INVALID_PARAMETER, "Unknown tool '" + name + "'");

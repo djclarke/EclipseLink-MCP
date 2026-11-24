@@ -124,7 +124,7 @@ class EditCommandTest {
         assertEquals(1, call("rename_customer", "{\"id\": 1, \"version\": 1, \"name\": \"Acme\"}"));
         assertTrue(out.contains("PERMISSION_DENIED"), out);
         assertEquals(1, commit("rename_customer", "{\"id\": 1, \"version\": 1, \"name\": \"Acme\"}"));
-        assertTrue(out.contains("tools.writes: true"), out);
+        assertTrue(out.contains("Customer is not listed under tools.writes"), out);
         assertEquals(1, call("rename_customer", "{\"id\": 1, \"version\": 7, \"name\": \"Acme\"}"));
         assertTrue(out.contains("CONFLICT") && out.contains("currentVersion"), out);
     }

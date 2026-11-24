@@ -8,7 +8,7 @@ Two server definitions over the same sample H2 database, a before and after of t
 |---|---|
 | [sales-db-generated](sales-db-generated) | The raw `init` output for every table, untouched. What you get first. |
 | [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. Read-only. |
-| [order-desk](order-desk) | The same model with write operations switched on (`tools.writes: true`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
+| [order-desk](order-desk) | The same model with writes enabled for `Order` and `OrderLine` only (`tools.writes: [Order, OrderLine]`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
 
 ## sales-db-generated
 
@@ -49,9 +49,10 @@ added under `reports/` and `queries/`. The tests run against this definition.
 
 ## order-desk
 
-A second server over the same database, for a different trust boundary: it can ship and cancel orders,
-correct a customer's email, reprice a product, and add, change or remove lines on open orders. Each is one file
-in `writes/` (spec 2.7). Every write uses optimistic locking (spec 4.9): `Customer`, `Order` and `Product`
+A second server over the same database, for a different trust boundary: it can ship and cancel orders, and
+add, change or remove lines on open orders. Each is one file in `writes/` (spec 2.7). Writes are enabled per
+entity: the descriptor lists `tools.writes: [Order, OrderLine]`, so `update_customer_email` and
+`reprice_product` are defined but not exposed until `Customer` or `Product` is added to that list. Every write uses optimistic locking (spec 4.9): `Customer`, `Order` and `Product`
 carry a `version`, and `OrderLine` is locked through its order, so any change to a line checks and increments
 the order's version.
 
