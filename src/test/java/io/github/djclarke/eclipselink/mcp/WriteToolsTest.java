@@ -56,7 +56,9 @@ class WriteToolsTest {
     @BeforeEach
     void start() {
         env = TestDatabase.freshCopy("writes" + DATABASES.incrementAndGet());
-        model = ModelRuntime.start(new DefinitionLoader(env).load(TestDatabase.ORDER_DESK_DEFINITION));
+        // The demo, plus the OrderLine operations it leaves hidden: they show locking through the order.
+        model = withWritable(TestDatabase.ORDER_DESK_DEFINITION, Map.of("Order", List.of("create", "update"),
+                "OrderLine", ALL, "Customer", List.of("create", "update")));
         tools = new ToolService(model);
     }
 
@@ -111,7 +113,7 @@ class WriteToolsTest {
                 d.writes()))) {
             ToolService readOnly = new ToolService(m);
             assertTrue(readOnly.tools().stream().allMatch(t -> t.kind() == ToolService.Kind.READ));
-            ToolException e = assertThrows(ToolException.class, () -> readOnly.call("ship_order", Map.of()));
+            ToolException e = assertThrows(ToolException.class, () -> readOnly.call("update_order", Map.of()));
             assertTrue(e.getMessage().contains("tools.writes"), e.getMessage());
             assertTrue(McpServerFactory.instructions(m, readOnly).contains("read-only server"));
         }
@@ -186,11 +188,13 @@ class WriteToolsTest {
     @Test
     void writeToolsAreAnnotatedForClients() {
         Map<String, ToolService.Kind> kinds = new LinkedHashMap<>();
-        tools.tools().stream().filter(t -> t.kind() != ToolService.Kind.READ).forEach(t -> kinds.put(t.name(), t.kind()));
-        assertEquals(Map.of("add_order_line", ToolService.Kind.CREATE, "cancel_order", ToolService.Kind.UPDATE,
-                "change_line_quantity", ToolService.Kind.UPDATE, "remove_order_line", ToolService.Kind.DELETE,
-                "ship_order", ToolService.Kind.UPDATE, "create_customer", ToolService.Kind.CREATE,
-                "update_customer_email", ToolService.Kind.UPDATE), kinds, "not reprice_product: Product is read-only");
+        try (ModelRuntime demo = ModelRuntime.start(new DefinitionLoader(env).load(TestDatabase.ORDER_DESK_DEFINITION))) {
+            new ToolService(demo).tools().stream().filter(t -> t.kind() != ToolService.Kind.READ)
+                    .forEach(t -> kinds.put(t.name(), t.kind()));
+        }
+        assertEquals(Map.of("create_order", ToolService.Kind.CREATE, "update_order", ToolService.Kind.UPDATE,
+                "create_customer", ToolService.Kind.CREATE, "update_customer", ToolService.Kind.UPDATE), kinds,
+                "lines cannot be changed once an order is placed, and products are read-only");
         McpSchema.ToolAnnotations update = McpServerFactory.annotations(ToolService.Kind.UPDATE);
         assertFalse(update.readOnlyHint());
         assertTrue(update.destructiveHint());
@@ -201,8 +205,7 @@ class WriteToolsTest {
 
     @Test
     void inputSchemasAskForTheVersionTheLockNeeds() {
-        Map<?, ?> ship = schema("ship_order");
-        assertEquals(List.of("id", "version", "shippedAt"), ship.get("required"));
+        assertEquals(List.of("id", "version", "status"), schema("update_order").get("required"));
         Map<?, ?> add = schema("add_order_line");
         assertEquals(List.of("orderVersion", "order", "product", "quantity"), add.get("required"));
         assertFalse(((Map<?, ?>) add.get("properties")).containsKey("price"), "copied from the product");
@@ -236,8 +239,8 @@ class WriteToolsTest {
 
     @Test
     void updateChecksAndIncrementsTheVersion() {
-        Map<String, Object> out = call("ship_order", "id", 1002, "version", 1,
-                "shippedAt", "2026-11-23T10:30:00-05:00");
+        Map<String, Object> out = call("update_order", "id", 1002, "version", 1,
+                "status", "SHIPPED", "shippedAt", "2026-11-23T10:30:00-05:00");
         Map<?, ?> item = (Map<?, ?>) out.get("item");
         assertEquals("SHIPPED", item.get("status"));
         assertEquals("2026-11-23T10:30:00-05:00", item.get("shippedAt"));
@@ -248,9 +251,10 @@ class WriteToolsTest {
 
     @Test
     void aStaleVersionIsAConflictAndChangesNothing() {
-        call("ship_order", "id", 1006, "version", 1, "shippedAt", "2026-11-23T10:30:00Z");
+        call("update_order", "id", 1006, "version", 1, "status", "SHIPPED", "shippedAt", "2026-11-23T10:30:00Z");
         // A second agent read the order while it was open, and tries to cancel it with that version.
-        ToolException e = fails(ToolException.Code.CONFLICT, "cancel_order", "id", 1006, "version", 1);
+        ToolException e = fails(ToolException.Code.CONFLICT, "update_order", "id", 1006, "version", 1,
+                "status", "CANCELLED");
         assertEquals(Map.of("entity", "Order", "id", 1006L, "expectedVersion", 1, "currentVersion", 2), e.details());
         assertTrue(e.getMessage().contains("Read it again"), e.getMessage());
         assertEquals("SHIPPED", db("SELECT STATUS FROM ORDERS WHERE ID = 1006"));
@@ -259,18 +263,78 @@ class WriteToolsTest {
     @Test
     void aChangeByAnotherApplicationIsDetected() {
         TestDatabase.execute(env, "UPDATE ORDERS SET TOTAL = 13000.00, VERSION = VERSION + 1 WHERE ID = 1005");
-        fails(ToolException.Code.CONFLICT, "ship_order", "id", 1005, "version", 1, "shippedAt", "2026-11-23T10:30:00Z");
-        Map<?, ?> item = (Map<?, ?>) call("ship_order", "id", 1005, "version", 2,
-                "shippedAt", "2026-11-23T10:30:00Z").get("item");
+        fails(ToolException.Code.CONFLICT, "update_order", "id", 1005, "version", 1, "status", "SHIPPED",
+                "shippedAt", "2026-11-23T10:30:00Z");
+        Map<?, ?> item = (Map<?, ?>) call("update_order", "id", 1005, "version", 2,
+                "status", "SHIPPED", "shippedAt", "2026-11-23T10:30:00Z").get("item");
         assertEquals("13000.00", item.get("total"));
         assertEquals(3, item.get("version"));
     }
 
     @Test
     void aConditionThatDoesNotHoldIsAPreconditionFailure() {
-        fails(ToolException.Code.PRECONDITION_FAILED, "cancel_order", "id", 1001, "version", 1);
+        fails(ToolException.Code.PRECONDITION_FAILED, "update_order", "id", 1001, "version", 1, "status", "CANCELLED");
         assertEquals("SHIPPED", db("SELECT STATUS FROM ORDERS WHERE ID = 1001"));
         assertEquals(1, db("SELECT VERSION FROM ORDERS WHERE ID = 1001"));
+    }
+
+    // ---- an order created with its lines -----------------------------------------------------------------------
+
+    private static Map<String, Object> line(int product, int quantity) {
+        return Map.of("product", product, "quantity", quantity);
+    }
+
+    @Test
+    void createOrderCreatesTheOrderWithItsLinesInOneCall() {
+        Map<String, Object> out = call("create_order", "customer", 1, "lines", List.of(line(1, 2), line(2, 1)));
+        Map<?, ?> order = (Map<?, ?>) out.get("item");
+        assertEquals(2000L, order.get("id"), "generated by the identity column");
+        assertEquals("OPEN", order.get("status"));
+        assertEquals(1, order.get("version"));
+        assertEquals(java.time.LocalDate.now().toString(), order.get("orderDate"));
+        assertEquals(0, new java.math.BigDecimal("170.00").compareTo(new java.math.BigDecimal((String) order.get("total"))),
+                "2 x 25.00 + 1 x 120.00: " + order.get("total"));
+        List<?> lines = (List<?>) out.get("lines");
+        assertEquals(2, lines.size());
+        assertEquals("25.00", ((Map<?, ?>) lines.get(0)).get("price"), "copied from the product");
+        assertEquals("Gadget", ((Map<?, ?>) lines.get(1)).get("productName"));
+        assertEquals(2L, db("SELECT COUNT(*) FROM ORDER_LINE WHERE ORDER_ID = 2000"));
+
+        Map<?, ?> shipped = (Map<?, ?>) call("update_order", "id", 2000, "version", 1, "status", "SHIPPED",
+                "shippedAt", "2026-11-24T09:00:00-05:00").get("item");
+        assertEquals(2, shipped.get("version"));
+    }
+
+    @Test
+    void createOrderChecksItsLinesAndCreatesNothingOnFailure() {
+        fails(ToolException.Code.INVALID_PARAMETER, "create_order", "customer", 1);
+        fails(ToolException.Code.INVALID_PARAMETER, "create_order", "customer", 1, "lines", List.of());
+        ToolException price = fails(ToolException.Code.INVALID_PARAMETER, "create_order", "customer", 1,
+                "lines", List.of(Map.of("product", 1, "quantity", 1, "price", "0.01")));
+        assertTrue(price.getMessage().contains("lines[0].price"), price.getMessage());
+        fails(ToolException.Code.INVALID_PARAMETER, "create_order", "customer", 1,
+                "lines", List.of(Map.of("product", 1)));
+        ToolException missing = fails(ToolException.Code.NOT_FOUND, "create_order", "customer", 1,
+                "lines", List.of(line(1, 1), line(99, 1)));
+        assertTrue(missing.getMessage().contains("lines[1]"), missing.getMessage());
+        fails(ToolException.Code.NOT_FOUND, "create_order", "customer", 42, "lines", List.of(line(1, 1)));
+        assertNull(db("SELECT ID FROM ORDERS WHERE ID >= 2000"));
+        assertNull(db("SELECT ID FROM ORDER_LINE WHERE ID >= 1000"));
+    }
+
+    @Test
+    void createOrderAsksForTheCustomerAndAListOfLines() {
+        Map<?, ?> schema = schema("create_order");
+        assertEquals(List.of("customer", "lines"), schema.get("required"));
+        Map<?, ?> lines = (Map<?, ?>) ((Map<?, ?>) schema.get("properties")).get("lines");
+        assertEquals("array", lines.get("type"));
+        assertEquals(1, lines.get("minItems"));
+        Map<?, ?> item = (Map<?, ?>) lines.get("items");
+        assertEquals(List.of("product", "quantity"), item.get("required"));
+        assertFalse(((Map<?, ?>) item.get("properties")).containsKey("price"), "copied from the product");
+        String description = tools.tools().stream().filter(t -> t.name().equals("create_order")).findFirst()
+                .orElseThrow().description();
+        assertTrue(description.contains("Sets total to the sum of quantity × price over the lines"), description);
     }
 
     // ---- locked through a relationship ------------------------------------------------------------------------
@@ -319,7 +383,7 @@ class WriteToolsTest {
         assertEquals(1, item.get("version"));
         assertEquals("Stark Industries", db("SELECT NAME FROM CUSTOMER WHERE ID = 100"));
         fails(ToolException.Code.INVALID_PARAMETER, "create_customer", "name", "Wayne", "region", "SOUTH");
-        Map<?, ?> updated = (Map<?, ?>) call("update_customer_email", "id", 100, "version", 1,
+        Map<?, ?> updated = (Map<?, ?>) call("update_customer", "id", 100, "version", 1,
                 "email", "ap@stark.example").get("item");
         assertEquals(2, updated.get("version"));
         ToolException noDelete = assertThrows(ToolException.class, () -> tools.call("delete_customer", Map.of()));
@@ -355,11 +419,13 @@ class WriteToolsTest {
 
     @Test
     void inputsAreChecked() {
-        fails(ToolException.Code.INVALID_PARAMETER, "ship_order", "id", 1002, "shippedAt", "2026-11-23T10:30:00Z");
-        fails(ToolException.Code.INVALID_PARAMETER, "ship_order", "id", 1002, "version", 1,
-                "shippedAt", "2026-11-23T10:30:00Z", "status", "OPEN");
-        fails(ToolException.Code.INVALID_FILTER, "ship_order", "id", 1002, "version", 1, "shippedAt", "23/11/2026");
-        fails(ToolException.Code.NOT_FOUND, "ship_order", "id", 9999, "version", 1, "shippedAt", "2026-11-23T10:30:00Z");
+        fails(ToolException.Code.INVALID_PARAMETER, "update_order", "id", 1002, "status", "SHIPPED");
+        fails(ToolException.Code.INVALID_PARAMETER, "update_order", "id", 1002, "version", 1,
+                "status", "SHIPPED", "total", "1.00");
+        fails(ToolException.Code.INVALID_PARAMETER, "update_order", "id", 1002, "version", 1, "status", "OPEN");
+        fails(ToolException.Code.INVALID_FILTER, "update_order", "id", 1002, "version", 1, "status", "SHIPPED",
+                "shippedAt", "23/11/2026");
+        fails(ToolException.Code.NOT_FOUND, "update_order", "id", 9999, "version", 1, "status", "SHIPPED");
         fails(ToolException.Code.NOT_FOUND, "add_order_line", "order", 1002, "orderVersion", 1, "product", 99,
                 "quantity", 1);
     }
@@ -367,8 +433,8 @@ class WriteToolsTest {
     @Test
     void aDryRunRollsBack() {
         try (ModelRuntime m = ModelRuntime.start(new DefinitionLoader(env).load(TestDatabase.ORDER_DESK_DEFINITION))) {
-            Map<String, Object> out = new ToolService(m, true).call("ship_order",
-                    args("id", 1002, "version", 1, "shippedAt", "2026-11-23T10:30:00Z"));
+            Map<String, Object> out = new ToolService(m, true).call("update_order",
+                    args("id", 1002, "version", 1, "status", "SHIPPED", "shippedAt", "2026-11-23T10:30:00Z"));
             assertEquals(true, out.get("dryRun"));
             assertEquals(2, ((Map<?, ?>) out.get("item")).get("version"));
         }
@@ -418,7 +484,17 @@ class WriteToolsTest {
         assertInvalid("name: odd\naction: update\nroot: Order\nset: { total: { allowed: [abc] } }\n", "total");
         assertInvalid("name: query_x\naction: update\nroot: Order\nfixed: { status: OPEN }\n", "clashes");
         assertInvalid("name: wipe\naction: delete\nroot: Order\nfixed: { status: OPEN }\n", "no set or fixed");
-        assertInvalid("name: ship_order\naction: update\nroot: Nope\nfixed: { status: OPEN }\n", "duplicate");
+        assertInvalid("name: relines\naction: update\nroot: Order\nfixed: { status: OPEN }\n"
+                + "items: { lines: { set: { quantity: {} } } }\n", "items apply only to a create");
+        assertInvalid("name: o\naction: create\nroot: Order\nset: { customer: {} }\n"
+                + "items: { customer: { set: { quantity: {} } } }\n", "must be a one-to-many");
+        assertInvalid("name: o\naction: create\nroot: Order\nset: { customer: {} }\n"
+                + "items: { lines: { set: { order: {} } } }\n", "set by the server");
+        assertInvalid("name: o\naction: create\nroot: Order\nset: { customer: {} }\n"
+                + "items: { lines: { set: { quantity: {} }, sum: { status: [quantity] } } }\n", "numeric");
+        assertInvalid("name: o\naction: create\nroot: Order\nset: { customer: {} }\n"
+                + "fixed: { orderDate: $now }\n", "'$now' needs a date-time");
+        assertInvalid("name: update_order\naction: update\nroot: Nope\nfixed: { status: OPEN }\n", "duplicate");
     }
 
     private void assertInvalid(String yaml, String expected) throws IOException {

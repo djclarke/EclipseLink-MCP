@@ -1,0 +1,22 @@
+name: create_order
+title: Create an order
+description: "Place a new order for a customer, with all of its lines in the same call. The database assigns the order and line ids. The order starts OPEN at version 1, dated today."
+action: create
+root: Order
+set:
+  customer: { required: true, description: "The customer the order is for" }
+fixed:
+  status: OPEN
+  orderDate: $today                 # the server's date when the order is created
+  createdAt: $now
+items:
+  lines:                            # Order.lines: each line is created with the order
+    min: 1
+    set:
+      product: { required: true }
+      quantity: { required: true, description: "Units, 1 or more" }
+    copy:                           # a snapshot: later product changes do not alter the line
+      price: product.price
+      productName: product.name
+    sum:
+      total: [quantity, price]      # the order's total is the sum of quantity × price over its lines

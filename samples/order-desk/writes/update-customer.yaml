@@ -1,0 +1,10 @@
+name: update_customer
+title: Update a customer
+description: "Change a customer's details. Pass only the fields to change: a field left out stays as it is, and null clears an optional one. The id and version identify the customer and cannot be changed."
+action: update
+root: Customer
+set:
+  name: { description: "Company or person name" }
+  region: { allowed: [EAST, WEST, NORTH] }
+  email: { description: "Contact email address" }
+  creditLimit: { description: "Credit limit in USD" }

@@ -23,7 +23,7 @@
     <entity class="Orders" access="VIRTUAL">
         <table name="ORDERS"/>
         <attributes>
-            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="orderDate" attribute-type="java.time.LocalDate"><column name="ORDER_DATE"/></basic>
             <basic name="status" attribute-type="String"><column name="STATUS"/></basic>
             <basic name="total" attribute-type="java.math.BigDecimal"><column name="TOTAL" precision="12" scale="2"/></basic>

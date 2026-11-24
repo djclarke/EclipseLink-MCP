@@ -8,8 +8,8 @@ Server definitions over the same sample H2 database, a before and after of the
 |---|---|
 | [sales-db-generated](sales-db-generated) | The raw `init` output for every table, untouched. What you get first. |
 | [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. Read-only. |
-| [order-desk](order-desk) | The same model with writes enabled for `Order`, `OrderLine` and `Customer` (`Order: [update]`, `OrderLine: [create, update, delete]`, `Customer: [create, update]` under `tools.writes`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
-| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: {Customer: [create, update]}`): `create_customer` and `update_customer_email`, locked by the `VERSION` column `init` mapped. |
+| [order-desk](order-desk) | The same model with writes enabled for orders and customers (`Order: [create, update]`, `Customer: [create, update]` under `tools.writes`), for an order desk agent: create an order with its lines, change its status, create and update customers. It connects as its own account, which may change only what its operations change. |
+| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: {Customer: [create, update]}`): `create_customer` and `update_customer`, locked by the `VERSION` column `init` mapped. |
 
 ## sales-db-generated
 
@@ -50,39 +50,43 @@ added under `reports/` and `queries/`. The tests run against this definition.
 
 ## order-desk
 
-A second server over the same database, for a different trust boundary: it can ship and cancel orders, add,
-change or remove lines on open orders, and create customers or correct their email. Each is one file in
-`writes/` (spec 2.7). Writes are enabled per entity and action:
+A second server over the same database, for a different trust boundary: it can create orders with their
+lines, ship or cancel open orders, and create customers or change their details. Lines cannot be changed once
+an order is placed, and products are read-only. Each operation is one file in `writes/` (spec 2.7). Writes
+are enabled per entity and action:
 
 ```yaml
 tools:
   writes:
-    Order: [update]
-    OrderLine: [create, update, delete]
+    Order: [create, update]
     Customer: [create, update]
 ```
 
-so `reprice_product` is defined but not exposed until `Product` is added, and customers cannot be deleted. Every write uses optimistic locking (spec 4.9): `Customer`, `Order` and `Product` carry
-a `version`, and `OrderLine` is locked through its order, so any change to a line checks and increments the
-order's version.
+`create_order` takes the customer and a list of lines (product and quantity) and creates them all in one
+transaction (`items:` in the operation). The database assigns the ids; the order starts OPEN at version 1,
+dated today. Each line copies the product's current price and name (`copy:`), so repricing a product later
+does not change existing orders, and the order's `total` is the sum of quantity × price (`sum:`).
 
-`add_order_line` takes only the order, the product and the quantity. The server copies the product's current
-price and name onto the line (`copy:` in the operation, spec 2.7), so repricing or renaming a product later
-does not change existing orders.
+`update_order` changes only the status of an OPEN order, to SHIPPED (with `shippedAt`) or CANCELLED. Every
+update uses optimistic locking (spec 4.9): the caller sends back the `version` it read.
+
+The OrderLine operations in `writes/` (`add_order_line`, `change_line_quantity`, `remove_order_line`) stay
+hidden because `OrderLine` is not listed. They are kept as examples of locking through a parent: a line has no
+version of its own, so each one checks and increments its order's version. `reprice_product` stays hidden
+for the same reason.
 
 It connects as `MCP_ORDER_DESK` (password `orderdesk` in the sample), which may read every table and change
-only `CUSTOMER` (insert, update), `PRODUCT` and `ORDERS` (update) and `ORDER_LINE` (insert, update, delete). Its model is a copy of
-`sales-db`'s, which a test keeps identical.
+only `CUSTOMER` and `ORDERS` (insert, update), `PRODUCT` (update) and `ORDER_LINE` (insert, update, delete).
+Its model is a copy of `sales-db`'s, which a test keeps identical.
 
 ```sh
 export SALES_DB_URL='jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' ORDER_DESK_DB_PASSWORD=orderdesk
-java -jar $JAR call --definition samples/order-desk ship_order \
-  '{"id":1002,"version":1,"shippedAt":"2026-11-23T10:30:00-05:00"}'           # dry run: rolled back
-java -jar $JAR call --definition samples/order-desk --commit ship_order '...'  # really writes
+java -jar $JAR call --definition samples/order-desk create_order \
+  '{"customer":1,"lines":[{"product":1,"quantity":2},{"product":2,"quantity":1}]}'  # dry run: rolled back
+java -jar $JAR call --definition samples/order-desk update_order \
+  '{"id":1002,"version":1,"status":"SHIPPED","shippedAt":"2026-11-23T10:30:00-05:00"}'
+java -jar $JAR call --definition samples/order-desk --commit update_order '...'      # really writes
 ```
-
-The sample does not recalculate an order's `total` when its lines change; a real schema would do that in the
-database or in a dedicated operation.
 
 ## sales-customer
 
@@ -105,9 +109,9 @@ back; a stale version gets `CONFLICT`:
 ```sh
 export SALES_DB_URL='jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' ORDER_DESK_DB_PASSWORD=orderdesk
 java -jar $JAR call --definition samples/sales-customer find_entity '{"entity":"Customer","id":3}'
-java -jar $JAR call --definition samples/sales-customer update_customer_email \
+java -jar $JAR call --definition samples/sales-customer update_customer \
   '{"id":3,"version":1,"email":"ap@initech.example"}'                      # dry run: rolled back
-java -jar $JAR call --definition samples/sales-customer update_customer_email \
+java -jar $JAR call --definition samples/sales-customer update_customer \
   '{"id":3,"version":0,"email":"ap@initech.example"}'                      # CONFLICT
 java -jar $JAR call --definition samples/sales-customer create_customer \
   '{"name":"Stark Industries","region":"EAST","email":"orders@stark.example"}'  # dry run: id 100, version 1

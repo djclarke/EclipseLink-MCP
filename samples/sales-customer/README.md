@@ -8,7 +8,7 @@ allows `Customer: [create, update]` under `tools.writes`, so `Orders`, `OrderLin
 | Tool | Action | Entity | Lock | Exposed |
 |---|---|---|---|---|
 | `create_customer` | create | Customer | starts at version 1; the identity column generates the id | yes |
-| `update_customer_email` | update | Customer | `version` (the `VERSION` column `init` found) | yes |
+| `update_customer` | update | Customer | `version` (the `VERSION` column `init` found) | yes |
 
 Optimistic lock versions found by `init`: Customer.version, Orders.version, Product.version.
 

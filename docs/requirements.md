@@ -167,6 +167,7 @@ Decided (2026-11-23): **a server is read-only by default.** Writes are enabled o
 - FR-51: Model support. `init` maps version columns it recognizes, and `edit` can set or clear an entity's version attribute and declare that it is locked through a relationship.
 - FR-52: Tool annotations. Write tools are annotated `readOnlyHint: false`, with `destructiveHint: true` for updates and deletes, so MCP clients can ask the user before running them.
 - FR-53: Snapshots of related data. A write operation can copy attributes from a related entity when the write is made (`copy`), so the record keeps the value it was made with. An order line copies its product's price and name, and a later price change does not alter existing lines.
+- FR-54: Parent and children in one call. A create can include rows of a one-to-many relationship (an order with its lines), in one transaction, with root values summed from the rows (the order total) and dates taken from the server's clock. An order desk can then place a whole order without line-by-line edits.
 
 The file format and tool behavior are in server-definition 2.7, 4.3 and 4.9.
 
