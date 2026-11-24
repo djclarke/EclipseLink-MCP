@@ -1,0 +1,7 @@
+# Tables this definition was generated from. Re-run init with --selection selection.yaml to regenerate.
+---
+include:
+- "*"
+types:
+- "TABLE"
+maxTables: 200

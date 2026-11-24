@@ -1,0 +1,7 @@
+name: update_customer_email
+title: Update a customer's email
+description: "Correct or clear the email address of a customer. Pass the version you read; a stale version is rejected."
+action: update
+root: Customer
+set:
+  email: { required: true, description: "The new address, or null to clear it" }

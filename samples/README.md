@@ -1,6 +1,6 @@
 # Samples
 
-Two server definitions over the same sample H2 database, a before and after of the
+Server definitions over the same sample H2 database, a before and after of the
 [configure-server-from-schema](../skills/configure-server-from-schema/SKILL.md) skill.
 `mvn test` creates the database at `target/test-db/sales` (or `mvn -Psample-db process-test-resources` without the tests).
 
@@ -9,6 +9,7 @@ Two server definitions over the same sample H2 database, a before and after of t
 | [sales-db-generated](sales-db-generated) | The raw `init` output for every table, untouched. What you get first. |
 | [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. Read-only. |
 | [order-desk](order-desk) | The same model with writes enabled for `Order` and `OrderLine` only (`tools.writes: [Order, OrderLine]`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
+| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: [Customer]`): one operation, `update_customer_email`, locked by the `VERSION` column `init` mapped. |
 
 ## sales-db-generated
 
@@ -69,3 +70,32 @@ java -jar $JAR call --definition samples/order-desk --commit ship_order '...'  #
 
 The sample does not recalculate an order's `total` when its lines change; a real schema would do that in the
 database or in a dedicated operation.
+
+## sales-customer
+
+The smallest write setup, made with the [configure-server-from-schema](../skills/configure-server-from-schema/SKILL.md)
+skill: `init` for every table, two `describe` edits, one file in `writes/`, and `tools.writes: [Customer]`.
+`init` maps each `VERSION` column as an optimistic lock, so no locking edit was needed.
+
+```sh
+export SALES_DB_PASSWORD=reader
+java -jar $JAR init --url 'jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' \
+  --user MCP_READER --password-env SALES_DB_PASSWORD --name sales-customer --include '*' --out samples/sales-customer
+java -jar $JAR edit --definition samples/sales-customer describe Customer "A customer account"
+java -jar $JAR edit --definition samples/sales-customer describe Customer.email "Contact email address, or null when unknown"
+```
+
+It connects as `MCP_ORDER_DESK`, which may update `CUSTOMER`. An agent reads a customer, then sends its `version`
+back; a stale version gets `CONFLICT`:
+
+```sh
+export SALES_DB_URL='jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' ORDER_DESK_DB_PASSWORD=orderdesk
+java -jar $JAR call --definition samples/sales-customer find_entity '{"entity":"Customer","id":3}'
+java -jar $JAR call --definition samples/sales-customer update_customer_email \
+  '{"id":3,"version":1,"email":"ap@initech.example"}'                      # dry run: rolled back
+java -jar $JAR call --definition samples/sales-customer update_customer_email \
+  '{"id":3,"version":0,"email":"ap@initech.example"}'                      # CONFLICT
+```
+
+A Desktop server running a sample from `target/eclipselink-mcp-server-*.jar` breaks when `mvn package` replaces
+that JAR under it: restart it after rebuilding. `mvn test` alone is fine while it runs.
