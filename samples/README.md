@@ -97,5 +97,5 @@ java -jar $JAR call --definition samples/sales-customer update_customer_email \
   '{"id":3,"version":0,"email":"ap@initech.example"}'                      # CONFLICT
 ```
 
-A Desktop server running the read-only `sales-db` definition holds the H2 file through `AUTO_SERVER`. Stop it
-before `mvn package`: the tests rebuild the database through it, and replacing the JAR breaks it.
+A Desktop server running a sample from `target/eclipselink-mcp-server-*.jar` breaks when `mvn package` replaces
+that JAR under it: restart it after rebuilding. `mvn test` alone is fine while it runs.

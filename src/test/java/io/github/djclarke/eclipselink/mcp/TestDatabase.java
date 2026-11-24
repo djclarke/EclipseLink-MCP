@@ -108,7 +108,12 @@ public final class TestDatabase {
 
     private static void create() {
         try (Connection c = DriverManager.getConnection(URL, "sa", "")) {
-            run(c, "/db/sales-db.sql");
+            // Not sales-db.sql: its RUNSCRIPT FROM 'classpath:...' runs in the JVM that owns the H2 file, which
+            // under AUTO_SERVER may be another process (e.g. a sales-db server in Claude Desktop) without these
+            // resources. Reading the scripts here sends their statements over the connection instead.
+            c.createStatement().execute("DROP ALL OBJECTS");
+            run(c, "/db/sales-schema.sql");
+            run(c, "/db/sales-data.sql");
         } catch (SQLException e) {
             throw new IllegalStateException("Could not create test database at " + FILE, e);
         }
