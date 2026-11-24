@@ -71,9 +71,9 @@ tools:
   reports: true                     # one tool per file in reports/
   queries: true                     # one tool per file in queries/
   writes:                           # entity -> allowed actions; default {} (read-only). An entity that
-    Order: [update]                 # allows update or delete must be optimistically locked (4.9);
-    OrderLine: [create, update, delete]   # create-only needs no lock. Exposes the writes/ operations
-    Customer: [create, update]      # whose root and action are allowed (2.7)
+    Order: [create, update]         # allows update or delete must be optimistically locked (4.9);
+    Customer: [create, update]      # create-only needs no lock. Exposes the writes/ operations
+                                    # whose root and action are allowed (2.7)
 limits:
   defaultPageSize: 50
   maxPageSize: 500
@@ -196,10 +196,11 @@ from open orders if relevant.
 A server is **read-only by default** (requirements 4.10). Writes are enabled **per entity**, one business scenario at a time:
 
 - `tools.writes` in the descriptor maps each writable entity to the actions it allows: `create`, `update` and/or `delete` (default: none). Startup fails if a listed entity does not exist, an action is unknown or the list is empty, or the entity allows `update` or `delete` but has no optimistic lock (4.9). So enabling a change to existing rows always means enabling locking for them. An entity that allows only `create` needs no lock, because a new row has nothing to conflict with.
-- Each file in `writes/` defines one write tool. A tool is exposed only when `tools.writes` allows its `action` on its `root`. The sample order desk allows `Order: [update]`, `OrderLine: [create, update, delete]` and `Customer: [create, update]`, so `reprice_product` stays hidden: products are read-only until `Product: [update]` is added.
+- Each file in `writes/` defines one write tool. A tool is exposed only when `tools.writes` allows its `action` on its `root`. The sample order desk allows `Order: [create, update]` and `Customer: [create, update]`, so its OrderLine operations (`add_order_line` and others, kept as examples of locking through a parent) and `reprice_product` stay hidden: lines change only when an order is created, and products are read-only.
+- The usual shape is one `create_<entity>`, one `update_<entity>` listing every attribute agents may change (all optional, so a call changes only what it passes), and a `condition` on each state change, either in its own operation (`ship_order`) or in a status-only update (the sample's `update_order`: SHIPPED or CANCELLED, only while OPEN). Attributes that change only through a state change, or are copied snapshots, stay out of `update_<entity>`. A parent created with its children in one call (an order and its lines) uses `items`.
 - All files are validated at startup whether or not their entity is listed, so a disabled operation cannot rot unnoticed.
 
-A write on an entity locked through a relationship also increments the parent's version. That is locking, not a data change, so the parent does not need to be listed (though in the sample it is).
+A write on an entity locked through a relationship also increments the parent's version. That is locking, not a data change, so the parent does not need to be listed. Rows created through `items` belong to the root's create: `Order: [create]` covers an order's lines.
 
 ```yaml
 name: ship_order                    # the tool name, as written
@@ -231,14 +232,30 @@ copy:                               # snapshot the product as it is now; later p
 condition: { path: order.status, op: eq, value: OPEN }
 ```
 
+```yaml
+name: create_order
+action: create
+root: Order                         # the database generates the order and line ids
+set:
+  customer: { required: true }
+fixed: { status: OPEN, orderDate: $today, createdAt: $now }
+items:
+  lines:                            # Order.lines, created with the order in one transaction
+    min: 1
+    set: { product: { required: true }, quantity: { required: true } }
+    copy: { price: product.price, productName: product.name }
+    sum: { total: [quantity, price] }
+```
+
 | Key | Meaning |
 |---|---|
 | `name` | Tool name, `[a-z][a-z0-9_]*`. Name it for the scenario (`ship_order`, `add_order_line`). It cannot start with `report_` or `query_`, or reuse a built-in tool name. |
 | `action` | `create` inserts one root entity, `update` changes one, `delete` removes one. One entity per call. |
 | `root` | The entity written. `edit rename-entity` updates it, as for reports and queries. |
 | `set` | Attributes the caller supplies. Basic attributes, or owning to-one relationships, whose value is the target's key; the target must exist. Keys, versions and to-many relationships cannot be set. `required` (default false) and `allowed` (a list of permitted values, in the contract's formats) are optional. On update, an optional attribute the caller leaves out is unchanged, and an explicit `null` clears it. |
-| `fixed` | Values the server sets on every call, in the same formats. An attribute is in `set` or `fixed`, not both. |
+| `fixed` | Values the server sets on every call, in the same formats. An attribute is in `set` or `fixed`, not both. `$today` (a date) and `$now` (a date-time, local or with offset) take the server's clock when the call runs. |
 | `copy` | Attributes the server copies from a related entity when the write is made: `target: relationship.attribute`. The first step of the path must be a relationship in `set` or `fixed`, the rest must reach a basic attribute without crossing a to-many relationship, and the types must match. The target cannot also be in `set` or `fixed`. On create it is always copied; on update only when the call changes the relationship. Use it to keep a record of details that can change later, such as a line's unit price. |
+| `items` | Create only. Rows of a one-to-many relationship (mapped by the other side) created in the same call, by relationship name: `lines: { min, set, fixed, copy, sum }`. The caller passes a list of objects with the `set` attributes; `min` (default 1) is the fewest rows. The server sets each row's relationship back to the new root, and the rows' key must be generated by the database. `sum` sets root attributes from the rows: `total: [quantity, price]` is the sum over the rows of quantity × price. The output lists the created rows under the relationship's name. |
 | `condition` | A filter in the shared grammar (4.3), with values only (no `param`). It is checked in the same transaction: before the change for update and delete, and on the new row for create, so paths through relationships work (`order.status`). |
 | `locking` | Omitted (default): the entity's lock (4.9) is required. `none`: allowed only on an entity that has no version and is not locked through a relationship, and says so in the tool description (last write wins). |
 

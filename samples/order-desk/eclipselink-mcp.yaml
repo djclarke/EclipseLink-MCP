@@ -16,8 +16,9 @@ server:
   title: Order desk (sample with writes)
   version: 0.1.0
   instructions: |
-    Sample order desk. Amounts are in USD. Ship or cancel open orders, add, change or remove lines on open
-    orders, and create customers or correct their email. Products are read-only here. Confirm each change with the user first.
+    Sample order desk. Amounts are in USD. Create orders with their lines, ship or cancel open orders, and
+    create customers or change their details. Lines cannot be changed once an order is placed, and products
+    are read-only here. Confirm each change with the user first.
 
 connection:
   # The same database as samples/sales-db, through an account allowed to make only these changes.
@@ -33,12 +34,12 @@ model:
 
 tools:
   # Entities that may be written and the actions allowed on each (default: none, read-only). Update and delete
-  # need an optimistic lock: Order and Customer have their own version, OrderLine is locked through its order.
-  # An operation in writes/ becomes a tool only when its action is listed for its entity, so reprice_product
-  # stays hidden until Product is added here, and customers cannot be deleted.
+  # need an optimistic lock: Order and Customer have their own version. create_order creates an order's lines
+  # with it, so Order: [create] covers them. An operation in writes/ becomes a tool only when its action is
+  # listed for its entity: the OrderLine operations (lock-through examples) and reprice_product stay hidden,
+  # and nothing can be deleted.
   writes:
-    Order: [update]
-    OrderLine: [create, update, delete]
+    Order: [create, update]
     Customer: [create, update]
 
 limits:

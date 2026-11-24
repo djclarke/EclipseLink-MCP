@@ -116,6 +116,8 @@ public final class DefinitionLoader {
                 require(!write.set().isEmpty() || !write.fixed().isEmpty(),
                         file + ": a " + write.action() + " needs attributes under set or fixed");
             }
+            require(write.items().isEmpty() || "create".equals(write.action()),
+                    file + ": items apply only to a create");
             writes.add(write);
         }
         return writes;
