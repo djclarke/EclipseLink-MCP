@@ -16,7 +16,7 @@ The file formats are specified in `docs/server-definition.md` in this repository
 - **Never handle the password.** Do not ask for it in chat, and never put it in a file or a command line. The user exports it in their own shell, and you pass only the variable's name with `--password-env`.
 - **Never select a whole database** unless the user asks for every table, and the database is small. Select precisely (step 2).
 - **One change at a time:** run it, show the result, and agree the next change.
-- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then enable only the entities that change, each with optimistic locking, and add one named write operation per scenario (step 7), never a general "edit anything" operation.
+- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then enable only the entities and actions agreed with them, settle each entity's lock, and add one named write operation per scenario (step 7), never a general "edit anything" operation.
 - **Never commit a write while designing.** `call` runs write tools as a dry run (rolled back). Do not pass `--commit`.
 
 Commands, with `$JAR` the runtime JAR (`target/eclipselink-mcp-server-*.jar` after `mvn package`):
@@ -144,18 +144,34 @@ If validation fails, the message names the file and the problem: an unknown path
 
 ## 7. Write scenarios (only when the user asks)
 
-A server stays read-only unless its descriptor lists entities under `tools.writes`. Writes are enabled per entity, and only on entities that are optimistically locked. When the user wants agents to change data, work out the **specific scenarios** first ("ship an open order", "add a line to an open order", "correct a customer's email"). Each becomes one file in `writes/` (spec 2.7), and agents can do exactly those changes and nothing else.
+A server stays read-only unless its descriptor's `tools.writes` names an entity and the actions allowed on it. When the user wants agents to change data, work through these steps for **one entity at a time**, and agree each answer with the user before moving on.
 
-**a. Locking comes first.** Every write is checked with optimistic locking (spec 4.9), and the server keeps no state between calls: the version goes out in every JSON item, comes back in the write call, and the write returns the new one. Before writing any operation, check how each entity it changes is locked, with `describe_entity` (its `lock`):
+**a. Which actions?** Ask, for the entity, which of these agents may do, and list them in the user's words:
 
-| Situation | What to do |
+| Action | Ask | Default |
+|---|---|---|
+| `create` | "Should agents add new rows, e.g. new customers?" | off |
+| `update` | "Should agents change existing rows? Which attributes?" | off |
+| `delete` | "Should agents remove rows?" Point out that it cannot be undone, and that a status change (`status: CANCELLED`) is often what the user means | off, and recommend leaving it off |
+
+Write down the scenarios behind each action ("create a customer", "correct a customer's email"). Each becomes one operation in `writes/`.
+
+**b. Which lock?** Every update and delete is checked with optimistic locking (spec 4.9). The server keeps no state between calls: the version goes out in every JSON item, comes back in the write call, and the write returns the new one. A create-only entity needs no lock, because a new row cannot conflict with a stale read. Find the lock with the user:
+
+1. Run `describe_entity` for the entity and look at its `lock`. `init` maps an integer column named `VERSION`, `ROW_VERSION`, `OPT_LOCK`, `OPTLOCK`, `LOCK_VERSION` or `OBJ_VERSION` as the version.
+2. If there is a `lock`, confirm it: "Customer is locked by its VERSION column. Does every application that writes CUSTOMER increment it?" A version that other writers ignore protects nothing.
+3. If there is none, look for candidates in the `describe_entity` attributes: integer columns with names like `REV`, `REVISION`, `ROW_VER`, `CHANGE_COUNT`, `SEQ_NO`. Ask the user which one, if any, every writer increments.
+
+| Answer | What to do |
 |---|---|
-| `init` found a version column (`VERSION`, `ROW_VERSION`, `OPT_LOCK`, ...) | Nothing: it is already a `<version>` mapping |
-| The table has an integer version column under another name | `edit set-version Customer revNo` (or `versions:` in the selection before `init`) |
-| A child table without a version, whose parent has one (order lines and their order) | `edit lock-through OrderLine order`. Every write on a line then checks and increments the order's version, so changes to an order and its lines never overwrite each other |
-| No version and no parent to lock through | Ask the DBA to add an integer version column that every application increments. Only if the user accepts that the last write wins, write the operation with `locking: none`, and say so plainly |
+| `init` already mapped the right column | Nothing |
+| An integer column under another name | `edit set-version Customer revNo` (or `versions:` in the selection before `init`) |
+| `init` mapped a column that is not really a version | `edit unset-version Customer`, then pick the right one or treat it as having none |
+| A child table without a version, always changed together with a parent that has one (order lines and their order) | `edit lock-through OrderLine order`. Every write on a line then checks and increments the order's version, so changes to an order and its lines never overwrite each other |
+| A timestamp column (`LAST_UPDATED`), or several columns that together show a change | Not supported yet: only integer versions are. Tell the user, and suggest an integer version column |
+| No version and no parent | Ask the DBA to add an integer version column that every application increments. Until then, allow only `create`. Only if the user accepts that the last write wins, write update or delete operations with `locking: none`, and say so plainly |
 
-**b. Write the operation.** Name it for the scenario. Keep `set` to what the agent must decide, put constant values in `fixed`, and add a `condition` for the state the row must be in. Use `allowed` to restrict a value to a list.
+**c. Write the operations.** One file per scenario, named for it. Keep `set` to what the agent must decide, put constant values in `fixed`, add a `condition` for the state the row must be in, and use `allowed` to restrict a value to a list. Use `copy` for values the row should keep as they were when it was written, such as a product's price on an order line, so later changes to the source do not alter it.
 
 ```yaml
 # writes/ship-order.yaml
@@ -180,13 +196,15 @@ set:
   order: { required: true }       # a to-one relationship takes the target's key
   product: { required: true }
   quantity: { required: true }
-  price: { required: true }
+copy:                             # snapshot of the product when the line is added
+  price: product.price
+  productName: product.name
 condition: { path: order.status, op: eq, value: OPEN }
 ```
 
-Keys, versions and to-many relationships cannot be set. A created entity's key is caller input unless the database generates it (`init` maps identity columns). Values use the same fixed type contract as reads.
+Keys, versions and to-many relationships cannot be set. A created entity's key is caller input unless the database generates it (`init` maps identity columns), and a new row starts at version 1. Values use the same fixed type contract as reads.
 
-**c. Preview it as a dry run.** Validate, then show the user what an agent sends and gets back. Read the row first, so they see the version travel:
+**d. Preview as a dry run.** Validate, then show the user what an agent sends and gets back. Read the row first, so they see the version travel:
 
 ```sh
 java -jar $JAR --definition defs/sales --validate
@@ -196,16 +214,18 @@ java -jar $JAR call --definition defs/sales ship_order '{"id":1002,"version":1,"
 
 The result has `"dryRun": true` and nothing is written. Also show a stale version (`"version": 0`) so the user sees the `CONFLICT` an agent gets, and a row that fails the condition (`PRECONDITION_FAILED`). A `PERMISSION_DENIED` means the account lacks a grant.
 
-**d. Enable writes for those entities.** Only when the user confirms, list the entities the operations change in the descriptor, and nothing more:
+**e. Enable the entity's actions.** Only when the user confirms, add the entity with exactly the actions agreed in step a:
 
 ```yaml
 tools:
-  writes: [Order, OrderLine]      # Customer and Product stay read-only
+  writes:
+    Customer: [create, update]       # no delete
+    OrderLine: [create, update, delete]
 ```
 
-Validate again: startup fails if a listed entity has no lock, which sends you back to step a. Operations on entities not listed stay hidden. Then tell the user:
+Validate again. `--validate` prints each writable entity with its actions and lock, for example `Customer [create, update] (lock: version)` or `OrderLine [...] (lock: through order -> Order.version)`. Read it back to the user. Startup fails if an entity that allows update or delete has no lock, which sends you back to step b. Operations whose action is not listed stay hidden. Then tell the user:
 
-- The server needs a database account with exactly the grants these operations need (for example `UPDATE` on ORDERS, `INSERT, UPDATE, DELETE` on ORDER_LINE), not the read-only one. Often this is a separate server definition with its own account, so read-only agents keep a read-only server.
+- The server needs a database account with exactly the grants these actions need (for example `INSERT, UPDATE` on CUSTOMER), not the read-only one. Often this is a separate server definition with its own account, so read-only agents keep a read-only server.
 - MCP clients ask the user before running tools marked destructive (updates and deletes).
 
 ## 8. Finish

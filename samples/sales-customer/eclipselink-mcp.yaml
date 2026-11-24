@@ -4,8 +4,8 @@ server:
   title: Sales (customer email updates, sample)
   version: 0.1.0
   instructions: |
-    Sample sales data. Amounts are in USD. Read customers, orders, order lines and products. The only change
-    allowed is correcting a customer's email, checked against the customer's version. Confirm each change
+    Sample sales data. Amounts are in USD. Read customers, orders, order lines and products. The only changes
+    allowed are creating a customer and correcting a customer's email, checked against the customer's version. Confirm each change
     with the user first.
 
 connection:
@@ -18,5 +18,7 @@ model:
   mappings: model/eclipselink-orm.xml
 
 tools:
-  # Only Customer may be written. init mapped its VERSION column as the optimistic lock.
-  writes: [Customer]
+  # Only Customer may be written: created and updated, never deleted. init mapped its VERSION column as the
+  # optimistic lock that updates check.
+  writes:
+    Customer: [create, update]

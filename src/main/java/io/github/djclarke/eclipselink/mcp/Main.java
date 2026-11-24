@@ -117,9 +117,16 @@ public final class Main {
                             + String.join(", ", q.loadGraph().relationships()) + ")").toList()));
             out.println("  writes:   " + (definition.writes().isEmpty() ? "none (read-only)"
                     : String.join(", ", definition.writes().stream().map(w -> w.name() + " (" + w.action() + ")")
-                    .toList()) + "; entities enabled for writes: "
-                    + (definition.descriptor().tools().writes().isEmpty() ? "none (read-only)"
-                    : String.join(", ", definition.descriptor().tools().writes()))));
+                    .toList())));
+            List<String> writable = new java.util.ArrayList<>();
+            definition.descriptor().tools().writes().forEach((entity, actions) -> {
+                var lock = io.github.djclarke.eclipselink.mcp.write.Lock.of(model.entity(entity));
+                writable.add(entity + " " + actions + " (lock: " + (lock == null ? "none"
+                        : lock.through() == null ? lock.versionAttribute()
+                        : "through " + lock.through().getAttributeName() + " -> " + lock.holder().getAlias() + "."
+                        + lock.versionAttribute()) + ")");
+            });
+            out.println("  writable: " + (writable.isEmpty() ? "none (read-only)" : String.join("; ", writable)));
             out.println("  tools:    " + String.join(", ", tools.tools().stream().map(ToolService.Tool::name).toList()));
             model.close();
             return;

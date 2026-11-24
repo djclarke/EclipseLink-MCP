@@ -10,7 +10,7 @@
     <entity class="Customer" access="VIRTUAL">
         <table name="CUSTOMER"/>
         <attributes>
-            <id name="id" attribute-type="Long"><column name="ID"/></id>
+            <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="name" attribute-type="String"><column name="NAME"/></basic>
             <basic name="region" attribute-type="String"><column name="REGION"/></basic>
             <basic name="email" attribute-type="String"><column name="EMAIL"/></basic>
@@ -43,6 +43,7 @@
             <id name="id" attribute-type="Long"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic name="quantity" attribute-type="Integer"><column name="QUANTITY"/></basic>
             <basic name="price" attribute-type="java.math.BigDecimal"><column name="PRICE" precision="10" scale="2"/></basic>
+            <basic name="productName" attribute-type="String"><column name="PRODUCT_NAME"/></basic>
             <many-to-one name="order" target-entity="sales.Orders" fetch="LAZY">
                 <join-column name="ORDER_ID" referenced-column-name="ID"/>
             </many-to-one>

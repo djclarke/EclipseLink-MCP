@@ -28,7 +28,7 @@ sales-db/                          # one server definition
 ├── queries/
 │   └── order-details.yaml         # one named entity query per file, with its graph (optional)
 ├── writes/
-│   └── ship-order.yaml            # one named write operation per file; exposed only for entities in tools.writes (optional)
+│   └── ship-order.yaml            # one named write operation per file; exposed only when tools.writes allows its action on its entity (optional)
 ├── prompts/
 │   └── quarterly-review.md        # author-defined MCP prompts (optional)
 ├── drivers/                       # JDBC driver JARs (optional, see 3.3)
@@ -70,8 +70,10 @@ tools:
   query_entities: true
   reports: true                     # one tool per file in reports/
   queries: true                     # one tool per file in queries/
-  writes: [Order, OrderLine]        # entities that may be written; default [] (read-only). Each must be
-                                    # optimistically locked (4.9). Exposes the writes/ operations on them (2.7)
+  writes:                           # entity -> allowed actions; default {} (read-only). An entity that
+    Order: [update]                 # allows update or delete must be optimistically locked (4.9);
+    OrderLine: [create, update, delete]   # create-only needs no lock. Exposes the writes/ operations
+    Customer: [create, update]      # whose root and action are allowed (2.7)
 limits:
   defaultPageSize: 50
   maxPageSize: 500
@@ -193,8 +195,8 @@ from open orders if relevant.
 
 A server is **read-only by default** (requirements 4.10). Writes are enabled **per entity**, one business scenario at a time:
 
-- `tools.writes` in the descriptor lists the entities that may be written (default: none). Startup fails if a listed entity does not exist or has no optimistic lock (4.9), so enabling writes on an entity always means enabling locking for it.
-- Each file in `writes/` defines one write tool. A tool is exposed only when its `root` entity is listed. The sample order desk lists `[Order, OrderLine]`, so its `update_customer_email` and `reprice_product` operations stay hidden until `Customer` or `Product` is added.
+- `tools.writes` in the descriptor maps each writable entity to the actions it allows: `create`, `update` and/or `delete` (default: none). Startup fails if a listed entity does not exist, an action is unknown or the list is empty, or the entity allows `update` or `delete` but has no optimistic lock (4.9). So enabling a change to existing rows always means enabling locking for them. An entity that allows only `create` needs no lock, because a new row has nothing to conflict with.
+- Each file in `writes/` defines one write tool. A tool is exposed only when `tools.writes` allows its `action` on its `root`. The sample order desk allows `Order: [update]`, `OrderLine: [create, update, delete]` and `Customer: [create, update]`, so `reprice_product` stays hidden: products are read-only until `Product: [update]` is added.
 - All files are validated at startup whether or not their entity is listed, so a disabled operation cannot rot unnoticed.
 
 A write on an entity locked through a relationship also increments the parent's version. That is locking, not a data change, so the parent does not need to be listed (though in the sample it is).
@@ -223,7 +225,9 @@ set:
   order:    { required: true }      # a to-one relationship: the caller passes the target's key
   product:  { required: true }
   quantity: { required: true }
-  price:    { required: true }
+copy:                               # snapshot the product as it is now; later price changes don't touch the line
+  price: product.price
+  productName: product.name
 condition: { path: order.status, op: eq, value: OPEN }
 ```
 
@@ -234,6 +238,7 @@ condition: { path: order.status, op: eq, value: OPEN }
 | `root` | The entity written. `edit rename-entity` updates it, as for reports and queries. |
 | `set` | Attributes the caller supplies. Basic attributes, or owning to-one relationships, whose value is the target's key; the target must exist. Keys, versions and to-many relationships cannot be set. `required` (default false) and `allowed` (a list of permitted values, in the contract's formats) are optional. On update, an optional attribute the caller leaves out is unchanged, and an explicit `null` clears it. |
 | `fixed` | Values the server sets on every call, in the same formats. An attribute is in `set` or `fixed`, not both. |
+| `copy` | Attributes the server copies from a related entity when the write is made: `target: relationship.attribute`. The first step of the path must be a relationship in `set` or `fixed`, the rest must reach a basic attribute without crossing a to-many relationship, and the types must match. The target cannot also be in `set` or `fixed`. On create it is always copied; on update only when the call changes the relationship. Use it to keep a record of details that can change later, such as a line's unit price. |
 | `condition` | A filter in the shared grammar (4.3), with values only (no `param`). It is checked in the same transaction: before the change for update and delete, and on the new row for create, so paths through relationships work (`order.status`). |
 | `locking` | Omitted (default): the entity's lock (4.9) is required. `none`: allowed only on an entity that has no version and is not locked through a relationship, and says so in the tool description (last write wins). |
 
@@ -417,7 +422,7 @@ The tool description lists the graph, so agents can pick the query whose shape f
 
 #### Write tools (one per named write operation)
 
-Exposed only when the operation's root entity is listed in `tools.writes` (2.7). Input, by action, built from the entity's mappings:
+Exposed only when `tools.writes` allows the operation's action on its root entity (2.7). Input, by action, built from the entity's mappings:
 
 | Action | Input |
 |---|---|
@@ -632,7 +637,7 @@ The runtime refuses to start, with a clear message, if any of these fail:
 4. OXM bindings refer only to mapped entities and attributes.
 5. Every report: paths, joins, aggregates, parameter types and uses.
 5a. Every named query: graph and orderBy paths, filter, parameter types and uses; per-query bindings refer only to mapped attributes.
-5b. Every write operation (2.7), whether or not its entity is listed in `tools.writes`; every entity in `tools.writes` exists and is locked; and every entity's lock: version attributes are integers, and `mcp.lock-through` names an owning to-one relationship to an entity with a version.
+5b. Every write operation (2.7), whether or not `tools.writes` enables it; every entity in `tools.writes` exists, lists known actions, and is locked if it allows update or delete; and every entity's lock: version attributes are integers, and `mcp.lock-through` names an owning to-one relationship to an entity with a version.
 6. Every prompt: front matter, argument names used in the body.
 7. Tool name uniqueness (including `report_`, `query_` and write operation names) and MCP name rules.
 
@@ -751,7 +756,7 @@ To show the user what agents will see after each step (FR-28), `call` runs one t
 java -jar eclipselink-mcp-server.jar call --definition <dir> query_order_details '{"region":"EAST","pageSize":2}'
 ```
 
-For a write tool, `call` is a **dry run** by default: it runs the operation in a transaction, flushes it so the database checks constraints and versions, prints the result with `"dryRun": true`, and rolls back. `--commit` applies it, and needs the entity listed in `tools.writes`. A dry run works before that, so the skill can preview an operation before the user enables writes on its entity. The design-time skill only ever uses the dry run.
+For a write tool, `call` is a **dry run** by default: it runs the operation in a transaction, flushes it so the database checks constraints and versions, prints the result with `"dryRun": true`, and rolls back. `--commit` applies it, and needs `tools.writes` to allow the operation's action on its entity. A dry run works before that, so the skill can preview an operation before the user enables writes on its entity. The design-time skill only ever uses the dry run.
 
 The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 
@@ -765,4 +770,4 @@ The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 7. Secret resolver plugins: a `plugins/` folder like `drivers/` (5.3). *Proposed.*
 8. Default naming in `init`: no singularization; the design-time skill proposes renames (7.4). *Proposed.*
 9. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
-10. ~~Writes.~~ *Decided (2026-11-23): read-only by default; named write operations in `writes/`, enabled per entity in `tools.writes` (each enabled entity must be optimistically locked) (2.7, 4.9). No generic write tools.*
+10. ~~Writes.~~ *Decided (2026-11-23): read-only by default; named write operations in `writes/`, enabled per entity and action in `tools.writes` (an entity that allows update or delete must be optimistically locked; integer versions only for now) (2.7, 4.9). No generic write tools.*

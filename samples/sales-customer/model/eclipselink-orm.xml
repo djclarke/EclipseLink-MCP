@@ -8,7 +8,7 @@
         <table name="CUSTOMER"/>
         <property name="mcp.description" value="A customer account"/>
 <attributes>
-            <id attribute-type="Long" name="id"><column name="ID"/></id>
+            <id attribute-type="Long" name="id"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic attribute-type="String" name="name"><column name="NAME"/></basic>
             <basic attribute-type="String" name="region"><column name="REGION"/></basic>
             <basic attribute-type="String" name="email"><column name="EMAIL"/>
@@ -43,6 +43,7 @@
             <id attribute-type="Long" name="id"><column name="ID"/><generated-value strategy="IDENTITY"/></id>
             <basic attribute-type="Integer" name="quantity"><column name="QUANTITY"/></basic>
             <basic attribute-type="java.math.BigDecimal" name="price"><column name="PRICE" precision="10" scale="2"/></basic>
+            <basic attribute-type="String" name="productName"><column name="PRODUCT_NAME"/></basic>
             <many-to-one fetch="LAZY" name="order" target-entity="salescustomer.Orders">
                 <join-column name="ORDER_ID" referenced-column-name="ID"/>
             </many-to-one>

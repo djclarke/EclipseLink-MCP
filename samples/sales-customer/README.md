@@ -1,11 +1,13 @@
 # sales-customer (writes for Customer only)
 
-The [init](../README.md#sales-customer) output for every table of the sample database, with one write
-scenario added through the configure-server-from-schema skill: correcting a customer's email. The descriptor
-lists `tools.writes: [Customer]`, so `Orders`, `OrderLine` and `Product` stay read-only.
+The [init](../README.md#sales-customer) output for every table of the sample database, with two write
+scenarios added through the configure-server-from-schema skill: creating a customer and correcting a customer's
+email. The descriptor
+allows `Customer: [create, update]` under `tools.writes`, so `Orders`, `OrderLine` and `Product` stay read-only.
 
 | Tool | Action | Entity | Lock | Exposed |
 |---|---|---|---|---|
+| `create_customer` | create | Customer | starts at version 1; the identity column generates the id | yes |
 | `update_customer_email` | update | Customer | `version` (the `VERSION` column `init` found) | yes |
 
 Optimistic lock versions found by `init`: Customer.version, Orders.version, Product.version.

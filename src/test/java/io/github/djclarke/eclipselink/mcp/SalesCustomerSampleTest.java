@@ -48,8 +48,8 @@ class SalesCustomerSampleTest {
     }
 
     @Test
-    void onlyTheCustomerEmailUpdateIsExposed() {
-        assertEquals(List.of("update_customer_email"),
+    void onlyCustomerCreateAndUpdateAreExposed() {
+        assertEquals(List.of("create_customer", "update_customer_email"),
                 tools.exposedWrites().stream().map(w -> w.definition().name()).toList());
     }
 
@@ -64,5 +64,13 @@ class SalesCustomerSampleTest {
         ToolException e = assertThrows(ToolException.class, () -> tools.call("update_customer_email",
                 Map.of("id", 3, "version", 0, "email", "old@initech.example")));
         assertEquals(ToolException.Code.CONFLICT, e.code(), e.getMessage());
+    }
+
+    @Test
+    void createGeneratesTheIdAndStartsAtVersionOne() {
+        Map<?, ?> item = (Map<?, ?>) tools.call("create_customer",
+                Map.of("name", "Stark Industries", "region", "EAST")).get("item");
+        assertEquals(100L, item.get("id"));
+        assertEquals(1, ((Number) item.get("version")).intValue());
     }
 }

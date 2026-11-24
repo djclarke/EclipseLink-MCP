@@ -66,9 +66,11 @@ public final class NamedWrite {
     private final List<String> keyInputs;
     private final Map<String, Field> set;
     private final Map<DatabaseMapping, Object> fixed;
+    private final Map<DatabaseMapping, AttributePath> copy;
 
     private NamedWrite(WriteDefinition definition, ClassDescriptor root, Action action, Lock lock,
-                       List<String> keyInputs, Map<String, Field> set, Map<DatabaseMapping, Object> fixed) {
+                       List<String> keyInputs, Map<String, Field> set, Map<DatabaseMapping, Object> fixed,
+                       Map<DatabaseMapping, AttributePath> copy) {
         this.definition = definition;
         this.root = root;
         this.action = action;
@@ -76,6 +78,7 @@ public final class NamedWrite {
         this.keyInputs = keyInputs;
         this.set = set;
         this.fixed = fixed;
+        this.copy = copy;
     }
 
     /** Validates the operation against the model (spec 6, item 5b). */
@@ -144,10 +147,38 @@ public final class NamedWrite {
                     throw new DefinitionException(where + "key '" + k + "' is always caller input; remove it from set");
                 }
             }
-            return new NamedWrite(def, root, action, lock, keyInputs, set, fixed);
+            Map<DatabaseMapping, AttributePath> copy = new LinkedHashMap<>();
+            for (Map.Entry<String, String> e : def.copy().entrySet()) {
+                if (set.containsKey(e.getKey()) || def.fixed().containsKey(e.getKey())) {
+                    throw new DefinitionException(where + "'" + e.getKey() + "' is copied, so it cannot also be "
+                            + "under set or fixed");
+                }
+                DatabaseMapping target = settable(root, e.getKey(), lock, action, where);
+                if (!target.isDirectToFieldMapping()) {
+                    throw new DefinitionException(where + "copy target '" + e.getKey() + "' must be a basic attribute");
+                }
+                AttributePath source = AttributePath.resolve(root, e.getValue());
+                DatabaseMapping via = source.mappings().get(0);
+                if (source.mappings().size() < 2 || !source.isBasic() || source.traversesCollection()
+                        || (!set.containsKey(via.getAttributeName()) && !fixed.containsKey(via))) {
+                    throw new DefinitionException(where + "copy source '" + e.getValue() + "' must be a basic "
+                            + "attribute reached through a to-one relationship under set or fixed");
+                }
+                if (!wrapper(source.type()).equals(wrapper(Mappings.attributeType(target)))) {
+                    throw new DefinitionException(where + "cannot copy " + e.getValue() + " ("
+                            + source.type().getSimpleName() + ") into " + e.getKey() + " ("
+                            + Mappings.attributeType(target).getSimpleName() + ")");
+                }
+                copy.put(target, source);
+            }
+            return new NamedWrite(def, root, action, lock, keyInputs, set, fixed, copy);
         } catch (ToolException e) {
             throw new DefinitionException(where + e.getMessage(), e);
         }
+    }
+
+    private static Class<?> wrapper(Class<?> c) {
+        return java.lang.invoke.MethodType.methodType(c).wrap().returnType();
     }
 
     private static DatabaseMapping settable(ClassDescriptor root, String name, Lock lock, Action action,
@@ -214,6 +245,12 @@ public final class NamedWrite {
         } else {
             sb.append(" Pass '").append(lock.inputName()).append("', the version of the ").append(lock.holder().getAlias())
                     .append(" it belongs to; the call checks it and returns the new one in 'locked'.");
+        }
+        if (!copy.isEmpty()) {
+            List<String> c = new ArrayList<>();
+            copy.forEach((m, p) -> c.add(m.getAttributeName() + " from " + p.text()));
+            sb.append(" Copies ").append(String.join(", ", c)).append(" when the write is made, so they do not "
+                    + "change later.");
         }
         if (!fixed.isEmpty()) {
             List<String> f = new ArrayList<>();
@@ -427,6 +464,18 @@ public final class NamedWrite {
             DatabaseMapping m = e.getKey();
             entity.set(m.getAttributeName(), m.isDirectToFieldMapping() ? e.getValue()
                     : resolve(em, m, e.getValue(), null));
+        }
+        // Snapshots: copied when the relationship is set (always on create), never refreshed afterwards.
+        for (Map.Entry<DatabaseMapping, AttributePath> e : copy.entrySet()) {
+            DatabaseMapping via = e.getValue().mappings().get(0);
+            if (action != Action.CREATE && !args.containsKey(via.getAttributeName()) && !fixed.containsKey(via)) {
+                continue;
+            }
+            Object value = entity;
+            for (DatabaseMapping m : e.getValue().mappings()) {
+                value = value == null ? null : ((DynamicEntity) value).get(m.getAttributeName());
+            }
+            entity.set(e.getKey().getAttributeName(), value);
         }
     }
 

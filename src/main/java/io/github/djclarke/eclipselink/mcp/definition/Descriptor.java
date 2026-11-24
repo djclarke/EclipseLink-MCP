@@ -10,6 +10,7 @@
 package io.github.djclarke.eclipselink.mcp.definition;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * The deployment descriptor, {@code eclipselink-mcp.yaml}. See docs/server-definition.md section 2.1.
@@ -70,7 +71,7 @@ public record Descriptor(
             Boolean query_entities,
             Boolean reports,
             Boolean queries,
-            List<String> writes) {
+            Map<String, List<String>> writes) {
         public Tools {
             list_entities = list_entities == null || list_entities;
             describe_entity = describe_entity == null || describe_entity;
@@ -78,8 +79,13 @@ public record Descriptor(
             query_entities = query_entities == null || query_entities;
             reports = reports == null || reports;
             queries = queries == null || queries;
-            // Read-only unless the definition names the entities that may be written (requirements 4.10).
-            writes = writes == null ? List.of() : List.copyOf(writes);
+            // Read-only unless the definition names the entities that may be written, and for each one the
+            // actions allowed: create, update, delete (requirements 4.10).
+            Map<String, List<String>> w = new java.util.LinkedHashMap<>();
+            if (writes != null) {
+                writes.forEach((entity, actions) -> w.put(entity, actions == null ? List.of() : List.copyOf(actions)));
+            }
+            writes = java.util.Collections.unmodifiableMap(w);
         }
     }
 
