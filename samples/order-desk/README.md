@@ -12,5 +12,5 @@ operations in `writes/` with those entities and actions become tools and the res
 | `change_line_quantity` | update | OrderLine | `orderVersion` | yes |
 | `remove_order_line` | delete | OrderLine | `orderVersion` | yes |
 | `create_customer` | create | Customer | starts at version 1 | yes |
-| `update_customer_email` | update | Customer | `version` | yes |
+| `update_customer` | update | Customer | `version` | yes |
 | `reprice_product` | update | Product | `version` | no: add `Product: [update]` to `tools.writes` |

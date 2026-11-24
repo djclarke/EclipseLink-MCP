@@ -16,7 +16,7 @@ The file formats are specified in `docs/server-definition.md` in this repository
 - **Never handle the password.** Do not ask for it in chat, and never put it in a file or a command line. The user exports it in their own shell, and you pass only the variable's name with `--password-env`.
 - **Never select a whole database** unless the user asks for every table, and the database is small. Select precisely (step 2).
 - **One change at a time:** run it, show the result, and agree the next change.
-- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then enable only the entities and actions agreed with them, settle each entity's lock, and add one named write operation per scenario (step 7), never a general "edit anything" operation.
+- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then enable only the entities and actions agreed with them and settle each entity's lock (step 7). For updates, write one `update_<entity>` operation over the attributes agents may change, and a named operation with a condition for each state change (`ship_order`). Keys and versions are never settable.
 - **Never commit a write while designing.** `call` runs write tools as a dry run (rolled back). Do not pass `--commit`.
 
 Commands, with `$JAR` the runtime JAR (`target/eclipselink-mcp-server-*.jar` after `mvn package`):
@@ -154,7 +154,12 @@ A server stays read-only unless its descriptor's `tools.writes` names an entity 
 | `update` | "Should agents change existing rows? Which attributes?" | off |
 | `delete` | "Should agents remove rows?" Point out that it cannot be undone, and that a status change (`status: CANCELLED`) is often what the user means | off, and recommend leaving it off |
 
-Write down the scenarios behind each action ("create a customer", "correct a customer's email"). Each becomes one operation in `writes/`.
+Then decide the operations in `writes/`:
+
+- **create** is usually one `create_<entity>` operation over the attributes a new row needs.
+- **update** is usually one `update_<entity>` operation listing every attribute agents may change, all optional, so a call changes only what it passes. Leave out the key and the version (they identify the row and cannot be set), to-many relationships, values copied as snapshots, and attributes that should change only through a state change.
+- **State changes** get their own named operation with a `condition` and `fixed` values (`ship_order`, `cancel_order`), so an agent cannot, for example, set an order's `status` to SHIPPED on a cancelled order. Leave those attributes out of `update_<entity>`.
+- **delete**, if allowed, is one `delete_<entity>` operation, usually with a `condition`.
 
 **b. Which lock?** Every update and delete is checked with optimistic locking (spec 4.9). The server keeps no state between calls: the version goes out in every JSON item, comes back in the write call, and the write returns the new one. A create-only entity needs no lock, because a new row cannot conflict with a stale read. Find the lock with the user:
 
@@ -171,7 +176,21 @@ Write down the scenarios behind each action ("create a customer", "correct a cus
 | A timestamp column (`LAST_UPDATED`), or several columns that together show a change | Not supported yet: only integer versions are. Tell the user, and suggest an integer version column |
 | No version and no parent | Ask the DBA to add an integer version column that every application increments. Until then, allow only `create`. Only if the user accepts that the last write wins, write update or delete operations with `locking: none`, and say so plainly |
 
-**c. Write the operations.** One file per scenario, named for it. Keep `set` to what the agent must decide, put constant values in `fixed`, add a `condition` for the state the row must be in, and use `allowed` to restrict a value to a list. Use `copy` for values the row should keep as they were when it was written, such as a product's price on an order line, so later changes to the source do not alter it.
+**c. Write the operations.** One file per operation, named for it. Keep `set` to what the agent must decide, put constant values in `fixed`, add a `condition` for the state the row must be in, and use `allowed` to restrict a value to a list. Use `copy` for values the row should keep as they were when it was written, such as a product's price on an order line, so later changes to the source do not alter it.
+
+```yaml
+# writes/update-customer.yaml
+name: update_customer
+title: Update a customer
+description: "Change a customer's details. Pass only the fields to change: a field left out stays as it is, and null clears an optional one."
+action: update
+root: Customer
+set:                              # everything agents may change; not id or version
+  name: { description: "Company or person name" }
+  region: { allowed: [EAST, WEST, NORTH] }
+  email: { description: "Contact email address" }
+  creditLimit: { description: "Credit limit in USD" }
+```
 
 ```yaml
 # writes/ship-order.yaml

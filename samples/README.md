@@ -9,7 +9,7 @@ Server definitions over the same sample H2 database, a before and after of the
 | [sales-db-generated](sales-db-generated) | The raw `init` output for every table, untouched. What you get first. |
 | [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. Read-only. |
 | [order-desk](order-desk) | The same model with writes enabled for `Order`, `OrderLine` and `Customer` (`Order: [update]`, `OrderLine: [create, update, delete]`, `Customer: [create, update]` under `tools.writes`), for an order desk agent. It connects as its own account, which may change only what its operations change. |
-| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: {Customer: [create, update]}`): `create_customer` and `update_customer_email`, locked by the `VERSION` column `init` mapped. |
+| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: {Customer: [create, update]}`): `create_customer` and `update_customer`, locked by the `VERSION` column `init` mapped. |
 
 ## sales-db-generated
 
@@ -105,9 +105,9 @@ back; a stale version gets `CONFLICT`:
 ```sh
 export SALES_DB_URL='jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' ORDER_DESK_DB_PASSWORD=orderdesk
 java -jar $JAR call --definition samples/sales-customer find_entity '{"entity":"Customer","id":3}'
-java -jar $JAR call --definition samples/sales-customer update_customer_email \
+java -jar $JAR call --definition samples/sales-customer update_customer \
   '{"id":3,"version":1,"email":"ap@initech.example"}'                      # dry run: rolled back
-java -jar $JAR call --definition samples/sales-customer update_customer_email \
+java -jar $JAR call --definition samples/sales-customer update_customer \
   '{"id":3,"version":0,"email":"ap@initech.example"}'                      # CONFLICT
 java -jar $JAR call --definition samples/sales-customer create_customer \
   '{"name":"Stark Industries","region":"EAST","email":"orders@stark.example"}'  # dry run: id 100, version 1

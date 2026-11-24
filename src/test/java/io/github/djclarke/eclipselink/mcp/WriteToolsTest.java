@@ -190,7 +190,7 @@ class WriteToolsTest {
         assertEquals(Map.of("add_order_line", ToolService.Kind.CREATE, "cancel_order", ToolService.Kind.UPDATE,
                 "change_line_quantity", ToolService.Kind.UPDATE, "remove_order_line", ToolService.Kind.DELETE,
                 "ship_order", ToolService.Kind.UPDATE, "create_customer", ToolService.Kind.CREATE,
-                "update_customer_email", ToolService.Kind.UPDATE), kinds, "not reprice_product: Product is read-only");
+                "update_customer", ToolService.Kind.UPDATE), kinds, "not reprice_product: Product is read-only");
         McpSchema.ToolAnnotations update = McpServerFactory.annotations(ToolService.Kind.UPDATE);
         assertFalse(update.readOnlyHint());
         assertTrue(update.destructiveHint());
@@ -319,7 +319,7 @@ class WriteToolsTest {
         assertEquals(1, item.get("version"));
         assertEquals("Stark Industries", db("SELECT NAME FROM CUSTOMER WHERE ID = 100"));
         fails(ToolException.Code.INVALID_PARAMETER, "create_customer", "name", "Wayne", "region", "SOUTH");
-        Map<?, ?> updated = (Map<?, ?>) call("update_customer_email", "id", 100, "version", 1,
+        Map<?, ?> updated = (Map<?, ?>) call("update_customer", "id", 100, "version", 1,
                 "email", "ap@stark.example").get("item");
         assertEquals(2, updated.get("version"));
         ToolException noDelete = assertThrows(ToolException.class, () -> tools.call("delete_customer", Map.of()));
