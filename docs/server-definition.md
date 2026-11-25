@@ -557,7 +557,7 @@ Both kinds of `CONFLICT` tell the agent what to do, in the message, in the write
 
 1. Nothing was changed, so do not retry straight away.
 2. Read the lock holder again with the call in `details.refresh`, for example `{ "tool": "find_entity", "arguments": { "entity": "Order", "id": 1006, "refresh": true } }`. (It is left out when `find_entity` is disabled; the message then says to read the entity again.)
-3. Compare the current state with the change it meant to make, and tell the user what is different.
+3. Compare the current state with the change it meant to make, and tell the user what is different. When the server can tell that the current state no longer meets the operation's `condition` (an update's row, or a create whose condition is all on the lock holder, such as `order.status`), it says so instead, with `details.conditionHolds: false`: a logical conflict that must not be retried, such as adding a line to an order that another user has just shipped.
 4. Retry with the new version only if the change still applies to the new state, asking the user when unsure.
 
 The step 5 `CONFLICT` has `details: { entity, id, refresh }` and no versions, since the database's version is only known after the read.

@@ -77,6 +77,24 @@ order and all its lines again (the error's `details.refresh`), and decides wheth
 one just added, conflicts with the new state, or still applies. The line copies the product's price and name,
 and the order's `total` is recomputed over all of its lines (`recompute:`).
 
+**Demo: adding a line while someone ships the order.** Users A and B both read open order 1002 at version 1.
+B ships it (`update_order`, version 1 to 2). A then adds a line with `orderVersion` 1 and gets `CONFLICT`. Because
+the order no longer meets `add_order_line`'s condition (`order.status` is OPEN), the error says so
+(`details.conditionHolds: false`): it is a logical conflict, so A's agent must not retry, and tells A that
+the order shipped without the line. `details.refresh` shows the shipped order and its lines. Retrying with
+version 2 would only get `PRECONDITION_FAILED`. A racing add cannot land on a shipped order either: the add
+updates the order's version with `WHERE VERSION = 1`, so whichever of the two commits second matches no row
+and gets `CONFLICT`.
+
+```sh
+java -jar $JAR call --definition samples/order-desk --commit update_order \
+  '{"id":1002,"version":1,"status":"SHIPPED","shippedAt":"2026-11-25T10:00:00Z"}'   # B ships
+java -jar $JAR call --definition samples/order-desk add_order_line \
+  '{"order":1002,"orderVersion":1,"product":1,"quantity":3}'                         # A: CONFLICT, do not retry
+```
+
+(This one commits; `mvn -Psample-db process-test-resources` resets the database.)
+
 `change_line_quantity` and `remove_order_line` stay hidden: `OrderLine` allows only `create`, so existing
 lines are immutable. `reprice_product` stays hidden because `Product` is not listed.
 

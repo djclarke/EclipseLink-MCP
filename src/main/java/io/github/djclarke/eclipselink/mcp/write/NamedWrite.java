@@ -663,7 +663,7 @@ public final class NamedWrite {
                     DynamicEntity entity = create(em, args);
                     Map<ItemsPart, List<DynamicEntity>> created = createItems(em, entity, args);
                     holder = lockHolderOf(entity);
-                    checkVersion(holder, args, canFind);
+                    checkVersion(em, holder, args, canFind);
                     recompute(em, entity, holder);
                     forceIncrement(em, holder);
                     em.persist(entity);
@@ -677,7 +677,7 @@ public final class NamedWrite {
                 case UPDATE -> {
                     DynamicEntity entity = find(em, root, args.get("id"), "id");
                     holder = lockHolderOf(entity);
-                    checkVersion(holder, args, canFind);
+                    checkVersion(em, holder, args, canFind);
                     checkCondition(em, args.get("id"));
                     part.apply(em, entity, args, action);
                     forceIncrement(em, holder);
@@ -687,7 +687,7 @@ public final class NamedWrite {
                 default -> {
                     DynamicEntity entity = find(em, root, args.get("id"), "id");
                     holder = lockHolderOf(entity);
-                    checkVersion(holder, args, canFind);
+                    checkVersion(em, holder, args, canFind);
                     checkCondition(em, args.get("id"));
                     forceIncrement(em, holder);
                     em.remove(entity);
@@ -843,7 +843,7 @@ public final class NamedWrite {
     }
 
     /** Compares the caller's version with the lock holder's current one (spec 4.9 step 2). */
-    private void checkVersion(DynamicEntity holder, Map<String, Object> args, boolean canFind) {
+    private void checkVersion(EntityManager em, DynamicEntity holder, Map<String, Object> args, boolean canFind) {
         if (lock == null || holder == null || (action == Action.CREATE && lock.through() == null)) {
             return;
         }
@@ -858,8 +858,20 @@ public final class NamedWrite {
             details.put("expectedVersion", expected);
             details.put("currentVersion", current);
             putRefresh(details, id, canFind);
-            throw new ToolException(Code.CONFLICT, entity + " " + id + " has changed since you read it (version "
-                    + current + ", you sent " + expected + "). " + conflictGuidance(entity + " " + id,
+            String message = entity + " " + id + " has changed since you read it (version " + current + ", you sent "
+                    + expected + "). ";
+            if (Boolean.FALSE.equals(conditionHolds(em, holder, args))) {
+                // The new state rules the change out (a line for an order that has just shipped): no judgement needed.
+                details.put("conditionHolds", false);
+                throw new ToolException(Code.CONFLICT, message + "Nothing was changed, and this change no longer "
+                        + "applies: " + entity + " " + id + " no longer meets this operation's condition "
+                        + io.github.djclarke.eclipselink.mcp.tools.Json.write(definition.condition()) + ". This is a "
+                        + "logical conflict, not a stale read: do not retry. "
+                        + (canFind ? "Call find_entity with " + io.github.djclarke.eclipselink.mcp.tools.Json.write(
+                                refreshArguments(id)) + " to see its current state, then tell" : "Tell")
+                        + " the user what changed and that their change was not made.", details);
+            }
+            throw new ToolException(Code.CONFLICT, message + conflictGuidance(entity + " " + id,
                     canFind ? refreshArguments(id) : null, children(), lock.inputName() + " " + current), details);
         }
     }
@@ -927,6 +939,65 @@ public final class NamedWrite {
         }
         a.put("refresh", true);
         return a;
+    }
+
+    /**
+     * After a CONFLICT: whether the operation's condition still holds for the current state, or null when it
+     * cannot be told before the change (a create whose condition is not all on the lock holder).
+     */
+    private Boolean conditionHolds(EntityManager em, DynamicEntity holder, Map<String, Object> args) {
+        if (definition.condition() == null) {
+            return null;
+        }
+        if (action != Action.CREATE) {
+            return !query(em, root, args.get("id"), definition.condition()).isEmpty();
+        }
+        if (lock.through() == null) {
+            return null;
+        }
+        Object onHolder = onHolder(definition.condition(), lock.through().getAttributeName() + ".");
+        return onHolder == null ? null
+                : !query(em, lock.holder(), Mappings.keyValue(lock.holder(), holder), onHolder).isEmpty();
+    }
+
+    /** The condition with every path's {@code order.} prefix removed, or null if any path does not have it. */
+    private static Object onHolder(Object node, String prefix) {
+        if (!(node instanceof Map<?, ?> m)) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : m.entrySet()) {
+            String k = e.getKey().toString();
+            Object v = e.getValue();
+            if (k.equals("and") || k.equals("or")) {
+                if (!(v instanceof List<?> l)) {
+                    return null;
+                }
+                List<Object> children = new ArrayList<>();
+                for (Object c : l) {
+                    Object r = onHolder(c, prefix);
+                    if (r == null) {
+                        return null;
+                    }
+                    children.add(r);
+                }
+                out.put(k, children);
+            } else if (k.equals("not")) {
+                Object r = onHolder(v, prefix);
+                if (r == null) {
+                    return null;
+                }
+                out.put(k, r);
+            } else if (k.equals("path")) {
+                if (!(v instanceof String s) || !s.startsWith(prefix)) {
+                    return null;
+                }
+                out.put(k, s.substring(prefix.length()));
+            } else {
+                out.put(k, v);
+            }
+        }
+        return out;
     }
 
     /** {@code details.refresh}: the exact read call to make before deciding whether to retry. */

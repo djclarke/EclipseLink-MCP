@@ -255,8 +255,8 @@ class WriteToolsTest {
 
     @Test
     void aStaleVersionIsAConflictAndChangesNothing() {
-        call("update_order", "id", 1006, "version", 1, "status", "SHIPPED", "shippedAt", "2026-11-23T10:30:00Z");
-        // A second agent read the order while it was open, and tries to cancel it with that version.
+        // One agent adds a line to the open order; a second, which read it before, tries to cancel it.
+        call("add_order_line", "order", 1006, "orderVersion", 1, "product", 1, "quantity", 3);
         ToolException e = fails(ToolException.Code.CONFLICT, "update_order", "id", 1006, "version", 1,
                 "status", "CANCELLED");
         Map<?, ?> refresh = (Map<?, ?>) e.details().get("refresh");
@@ -277,15 +277,15 @@ class WriteToolsTest {
                 "still applies: retry with version 2", "ask the user before retrying")) {
             assertTrue(e.getMessage().contains(s), s + " in: " + e.getMessage());
         }
-        assertEquals("SHIPPED", db("SELECT STATUS FROM ORDERS WHERE ID = 1006"));
+        assertEquals("OPEN", db("SELECT STATUS FROM ORDERS WHERE ID = 1006"));
 
         // The refresh call it names works as given, and returns the current state and version.
         Map<String, Object> arguments = new LinkedHashMap<>();
         ((Map<?, ?>) refresh.get("arguments")).forEach((k, v) -> arguments.put((String) k, v));
         Map<?, ?> item = (Map<?, ?>) tools.call("find_entity", arguments).get("item");
-        assertEquals("SHIPPED", item.get("status"));
+        assertEquals("OPEN", item.get("status"));
         assertEquals(2, item.get("version"));
-        assertEquals(List.of(7L, 8L), ((List<?>) item.get("lines")).stream().map(l -> ((Map<?, ?>) l).get("id"))
+        assertEquals(List.of(7L, 8L, 1000L), ((List<?>) item.get("lines")).stream().map(l -> ((Map<?, ?>) l).get("id"))
                 .sorted().toList(), "all of the order's lines");
     }
 
@@ -442,6 +442,46 @@ class WriteToolsTest {
         assertEquals(Map.of("entity", "Order", "id", 1002L, "version", 3), second.get("locked"));
         assertEquals(0, new java.math.BigDecimal("795.00").compareTo(
                 (java.math.BigDecimal) db("SELECT TOTAL FROM ORDERS WHERE ID = 1002")));
+    }
+
+    @Test
+    void addingALineWhileAnotherUserShipsTheOrderIsALogicalConflict() {
+        // Users A and B both read open order 1002 at version 1. B ships it first.
+        call("update_order", "id", 1002, "version", 1, "status", "SHIPPED", "shippedAt", "2026-11-25T10:00:00Z");
+
+        // A's line is refused: the order changed, and it no longer meets add_order_line's condition.
+        ToolException e = fails(ToolException.Code.CONFLICT, "add_order_line", "order", 1002, "orderVersion", 1,
+                "product", 1, "quantity", 3);
+        assertEquals(false, e.details().get("conditionHolds"));
+        for (String s : List.of("Order 1002 has changed since you read it (version 2, you sent 1)",
+                "Nothing was changed", "no longer meets this operation's condition", "logical conflict",
+                "do not retry", "tell the user what changed and that their change was not made")) {
+            assertTrue(e.getMessage().contains(s), s + " in: " + e.getMessage());
+        }
+        assertFalse(e.getMessage().contains("still applies: retry"), e.getMessage());
+
+        // The refresh shows why: the order is shipped, with only its original lines.
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        ((Map<?, ?>) ((Map<?, ?>) e.details().get("refresh")).get("arguments"))
+                .forEach((k, v) -> arguments.put((String) k, v));
+        Map<?, ?> order = (Map<?, ?>) tools.call("find_entity", arguments).get("item");
+        assertEquals("SHIPPED", order.get("status"));
+        assertEquals(2, ((List<?>) order.get("lines")).size());
+
+        // Even with the current version the line cannot land on a shipped order.
+        fails(ToolException.Code.PRECONDITION_FAILED, "add_order_line", "order", 1002, "orderVersion", 2,
+                "product", 1, "quantity", 3);
+        assertEquals(2L, db("SELECT COUNT(*) FROM ORDER_LINE WHERE ORDER_ID = 1002"));
+        assertEquals(2, db("SELECT VERSION FROM ORDERS WHERE ID = 1002"));
+    }
+
+    @Test
+    void aStaleAddToAnOrderThatIsStillOpenGetsTheJudgementGuidance() {
+        call("add_order_line", "order", 1002, "orderVersion", 1, "product", 1, "quantity", 3);
+        ToolException e = fails(ToolException.Code.CONFLICT, "add_order_line", "order", 1002, "orderVersion", 1,
+                "product", 1, "quantity", 3);
+        assertNull(e.details().get("conditionHolds"), "still OPEN: only the agent can tell a duplicate");
+        assertTrue(e.getMessage().contains("duplicate"), e.getMessage());
     }
 
     @Test
