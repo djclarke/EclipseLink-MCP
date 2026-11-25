@@ -1,6 +1,6 @@
 ---
 name: configure-server-from-schema
-description: Build an EclipseLink MCP server definition from an existing database with the user. Choose tables precisely, generate with init, simplify the model with validated edits, add named queries and named reports, and, only when the user asks, enable specific write scenarios with optimistic locking, checking the agent-facing JSON after every step.
+description: Build an EclipseLink MCP server definition from an existing database with the user. Choose tables precisely, generate with init, simplify the model with validated edits, classify each entity's kind and tenancy, add named queries and named reports, and, only when the user asks, enable specific write scenarios with optimistic locking, checking the agent-facing JSON after every step.
 ---
 
 # Configure an EclipseLink MCP server from a schema
@@ -12,11 +12,11 @@ The file formats are specified in `docs/server-definition.md` in this repository
 ## Ground rules
 
 - **Never write or edit `model/eclipselink-orm.xml` by hand.** `init` generates it, and `edit` changes it. Each `edit` validates the whole definition against the database and restores every file if the change breaks anything. If an operation you need does not exist, tell the user, and do not edit the XML as text.
-- **Reports and queries are YAML you write** (`reports/*.yaml`, `queries/*.yaml`). After writing one, always validate it (step 6).
+- **Reports and queries are YAML you write** (`reports/*.yaml`, `queries/*.yaml`). After writing one, always validate it (step 7).
 - **Never handle the password.** Do not ask for it in chat, and never put it in a file or a command line. The user exports it in their own shell, and you pass only the variable's name with `--password-env`.
 - **Never select a whole database** unless the user asks for every table, and the database is small. Select precisely (step 2).
 - **One change at a time:** run it, show the result, and agree the next change.
-- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then enable only the entities and actions agreed with them and settle each entity's lock (step 7). For updates, write one `update_<entity>` operation over the attributes agents may change, and a named operation with a condition for each state change (`ship_order`). Keys and versions are never settable.
+- **Read-only by default.** Never enable writes unless the user asks for a specific change agents should make. Then enable only the entities and actions agreed with them and settle each entity's lock (step 8). For updates, write one `update_<entity>` operation over the attributes agents may change, and a named operation with a condition for each state change (`ship_order`). Keys and versions are never settable.
 - **Never commit a write while designing.** `call` runs write tools as a dry run (rolled back). Do not pass `--commit`.
 
 Commands, with `$JAR` the runtime JAR (`target/eclipselink-mcp-server-*.jar` after `mvn package`):
@@ -80,7 +80,41 @@ After each edit, show the command's output, and when the shape changed, a `call`
 
 Do the model edits before writing reports and queries. A report that uses an attribute blocks renaming or removing it, until you update the report's YAML.
 
-## 5. Named queries: entities with the right amount of the graph
+## 5. Entity kinds and tenancy
+
+With the model simplified, go through the entities **one at a time** and settle two things with the user. Both decide what the server may cache (spec 2.8 and 2.9). Ask in the user's terms, not EclipseLink's.
+
+`set-kind`, `multitenant` and the descriptor's `tenancy` are specified but not built yet (roadmap K1 and K3). If `edit` reports an unknown operation, record the user's answers in the definition's `README.md` under "Entity kinds and tenancy", tell the user they take effect once the runtime supports them, and carry on: until then every entity behaves as `external`, which is always safe.
+
+**a. Who changes this data?** Ask: "Can rows of Product change while the server is running? If so, by whom?"
+
+| Answer | Kind | Command |
+|---|---|---|
+| Only by a release or a rare, planned update (countries, currencies, categories) | `reference`: read-only, cached | `edit set-kind Country reference` (add `--ttl 1h` if it can change between restarts) |
+| Other applications or back-end systems change it, but agents should not | `external`: read-only, read from the database every call | `edit set-kind Product external` (the default; set it anyway so the choice is recorded) |
+| Agents should change it through this server | `writable`: settled in step 8 | Leave it until step 8, which sets it |
+
+When unsure, choose `external`: it is always correct, and `reference` is only faster. A `reference` entity can refer only to other `reference` entities; if `set-kind` is refused, it names the relationship, which is usually a reverse one-to-many to remove (`remove-attribute Product orderLines`).
+
+**b. Does each row belong to one tenant?** Ask only if the database serves several customers, companies or organizations ("tenants") in the same tables or schemas. If it does, ask for each entity whether its rows belong to a tenant or are shared by all of them, and then how the database keeps tenants apart:
+
+| Database layout | Mechanism | Command |
+|---|---|---|
+| A column such as `TENANT_ID` in a shared table | Single table | `edit multitenant Order single-table TENANT_ID` |
+| Separate tables per tenant, in a schema per tenant (`ACME.ORDERS`) | Table per tenant, by schema | `edit multitenant Order table-per-tenant schema` |
+| Separate tables named per tenant (`ACME_ORDERS`) | Table per tenant, by prefix or suffix | `edit multitenant Order table-per-tenant prefix` |
+| A separate database per tenant | No mapping: one server definition per database | none |
+
+Look for candidate columns (`TENANT_ID`, `TENANT`, `ORG_ID`, `COMPANY_ID`) in `describe_entity` and suggest them, but let the user confirm. Do not offer Oracle VPD. Then explain what follows, and settle it with the user:
+
+- The tenant column disappears from the JSON; agents never see or pass a tenant.
+- Shared entities (products, countries) can be referred to by tenant entities, but a shared entity must not refer to a tenant entity. `edit` refuses that and names the relationship to remove.
+- Tenant entities are never `reference`, and in a multitenant definition shared entities are `reference` or `external`, never writable, because a change would reach every tenant.
+- Add `tenancy` to the descriptor. For a local (stdio) server, one tenant per process: `tenancy:` with `tenant: ${env:TENANT_ID}`, with the user exporting the variable. Tell the user that in a local server the tenant is a convenience, not a security boundary: the database account still decides what can be read. A hosted HTTP server reads the tenant from each caller's token instead (`tenancy:` with `claim: tenant_id`).
+
+After each change, show a `call` result to show the tenant column gone and the rows limited to the tenant. Validate, and read back the summary, which lists each entity with its kind and tenancy.
+
+## 6. Named queries: entities with the right amount of the graph
 
 When agents need related data together ("orders with their customer and lines"), define a named query. Its `graph` lists the attribute paths to load and return. That makes it both the load plan (one batch statement per relationship level per page) and the JSON shape. Spec 2.5 has the format.
 
@@ -103,7 +137,7 @@ graph: [orderDate, status, total, customer.name, lines.quantity, lines.product.n
 
 Keep graphs as small as the use case allows. Different use cases get different queries over the same entities. Do not add mappings for them.
 
-## 6. Named reports: flat, aggregated answers
+## 7. Named reports: flat, aggregated answers
 
 When the question is a total, a count or a list of values across tables ("sales by region"), define a named report instead (spec 2.4). It runs as one SQL statement and returns rows.
 
@@ -142,7 +176,7 @@ java -jar $JAR call --definition defs/sales query_order_details '{"region":"EAST
 
 If validation fails, the message names the file and the problem: an unknown path, a param that is declared but unused, or a missing `as`. Fix the YAML and validate again.
 
-## 7. Write scenarios (only when the user asks)
+## 8. Write scenarios (only when the user asks)
 
 A server stays read-only unless its descriptor's `tools.writes` names an entity and the actions allowed on it. When the user wants agents to change data, work through these steps for **one entity at a time**, and agree each answer with the user before moving on.
 
@@ -250,7 +284,7 @@ java -jar $JAR call --definition defs/sales ship_order '{"id":1002,"version":1,"
 
 The result has `"dryRun": true` and nothing is written. Also show a stale version (`"version": 0`) so the user sees the `CONFLICT` an agent gets (its `details.refresh` is the read to make before deciding whether the change is a duplicate, a conflict, or still applies), and a row that fails the condition (`PRECONDITION_FAILED`). A `PERMISSION_DENIED` means the account lacks a grant.
 
-**e. Enable the entity's actions.** Only when the user confirms, add the entity with exactly the actions agreed in step a:
+**e. Enable the entity's actions.** Only when the user confirms, mark the entity writable (`edit set-kind Customer writable`; an entity locked through another, such as `OrderLine`, follows its lock holder), then add it with exactly the actions agreed in step a:
 
 ```yaml
 tools:
@@ -264,9 +298,9 @@ Validate again. `--validate` prints each writable entity with its actions and lo
 - The server needs a database account with exactly the grants these actions need (for example `INSERT, UPDATE` on CUSTOMER), not the read-only one. Often this is a separate server definition with its own account, so read-only agents keep a read-only server.
 - MCP clients ask the user before running tools marked destructive (updates and deletes).
 
-## 8. Finish
+## 9. Finish
 
-- Run `--validate` once more, and list the tools the server will expose. Say whether it is read-only, and if not, list the write tools and the account they need.
+- Run `--validate` once more, and list the tools the server will expose. Say whether it is read-only, and if not, list the write tools and the account they need. List which entities are cached (`reference`), which are read fresh every call (`external`, `writable`), and, if the model is multitenant, which entities are shared and where the tenant comes from.
 - Suggest the user commit the definition folder to git. It contains no secrets.
 - Give the client configuration for Claude Desktop or Claude Code (spec 3.4) with the definition path, and the environment variable names from the descriptor. Remind the user the password goes in their environment, not in the file.
 - Note any `init` warnings that were left unresolved, such as skipped columns or keyless views.

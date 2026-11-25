@@ -74,6 +74,9 @@ tools:
     Order: [create, update]         # allows update or delete must be optimistically locked (4.9);
     Customer: [create, update]      # create-only needs no lock. Exposes the writes/ operations
                                     # whose root and action are allowed (2.7)
+# tenancy:                          # required when the model has multitenant entities (2.9)
+#   tenant: ${env:TENANT_ID}        # stdio: one tenant per process; or claim: tenant_id (HTTP)
+
 limits:
   defaultPageSize: 50
   maxPageSize: 500
@@ -266,6 +269,67 @@ items:
 | `locking` | Omitted (default): the entity's lock (4.9) is required. `none`: allowed only on an entity that has no version and is not locked through a relationship, and says so in the tool description (last write wins). |
 
 Rules checked at startup (6): the root exists; every `set`, `fixed` and `condition` path exists and fits its rule above; `fixed` and `allowed` values convert to the attribute's type; and the entity has a lock, or the file says `locking: none`. Keys of a created entity are caller input unless the database generates them (4.3). Whether every `NOT NULL` column gets a value is left to the database, which reports `CONSTRAINT_VIOLATION`.
+
+### 2.8 Entity kinds: reference, external and writable
+
+Every entity has a **kind**, which says who changes its rows and so how the runtime may cache it. The kind is a descriptor property in the ORM file (`mcp.kind`), set with `edit set-kind` (7.5), and the design-time skill asks for it per entity.
+
+| Kind | Who changes the rows | MCP tools | Caching | EclipseLink settings the runtime applies |
+|---|---|---|---|---|
+| `reference` | Nobody while the server runs, or rarely and by release (countries, currencies, units, product categories) | Read only | **Shared cache**, optionally with a time to live | `read-only="true"` on the entity, `<cache isolation="SHARED" type="FULL">`, `expiry` from `--ttl` |
+| `external` (**default**) | Other applications and back-end systems, never this server | Read only | **None:** read from the database on every call | `read-only="true"` on the entity, `<cache isolation="ISOLATED">` |
+| `writable` | This server's write operations (2.7), and possibly other applications too | Reads, plus the write operations `tools.writes` allows | **None**, as 5.6 requires | `<cache isolation="ISOLATED">` |
+
+Each tool call has its own EntityManager, so an isolated entity is always read from the database: `find_entity`'s `refresh` changes nothing for it, and an agent never sees a row older than its call. Named reports never use the cache, whatever the kind (FR-21).
+
+Rules, checked by `edit` and at startup (6):
+
+- `external` is the default. An entity with no `mcp.kind` is read from the database every time, as every entity is today, so only an explicit choice turns caching on.
+- `tools.writes` may list only `writable` entities. An entity locked through another (`mcp.lock-through`) is `writable` when its lock holder is.
+- A `writable` entity need not be in `tools.writes`. It stays uncached, so a package whose writes are switched off at install (3.5.5) behaves the same, and so does a server that reads data another instance writes.
+- A `reference` entity's relationships may only target other `reference` entities. A cached object that points at uncached ones would either hold stale rows or pull them into the shared cache. Remove the reverse one-to-many (`remove-attribute Product orderLines`) or unlink the relationship first; `edit set-kind` says which.
+- A `reference` entity cannot be multitenant (2.9): the shared cache is shared by every caller.
+- A write operation reads its `copy` sources (an order line's product price) from the database, not the cache, so a snapshot never takes a stale value from a `reference` entity.
+
+**Choosing between `reference` and `external`.** The question to ask is "can these rows change while the server is running, other than by a new release?" Product names and prices in the order desk are a judgment call: `reference` when prices change only with a catalogue release (restart the server, or set a TTL), `external` when a back-end pricing system changes them during the day. When in doubt, `external` is always correct; `reference` is only faster.
+
+*Later:* EclipseLink cache coordination or database change notification could invalidate `reference` entities when they change, instead of a TTL or restart. Not planned (database change notification is Oracle-specific).
+
+### 2.9 Multitenancy
+
+A model can mix **multitenant** entities, whose rows belong to one tenant, with **shared** entities that every tenant sees. Multitenancy is set per entity with EclipseLink's `<multitenant>` mapping, written by `edit multitenant` (7.5). Any entity without it is shared. Agents never see a tenant: the tenant column is not an attribute, does not appear in JSON, JSON Schema or `describe_entity`, and is not a write input.
+
+**Mechanisms.** The skill asks which one each tenant entity uses:
+
+| Mechanism | Database layout | `edit` | What EclipseLink does |
+|---|---|---|---|
+| **Single table** (`SINGLE_TABLE`) | One table for all tenants, with a tenant column (`TENANT_ID`), or several columns | `edit multitenant Order single-table TENANT_ID` | Adds `TENANT_ID = :tenant` to every query on the entity, relationship loads and reports included, and sets the column on insert |
+| **Table per tenant** (`TABLE_PER_TENANT`) | One table per tenant, told apart by schema (`ACME.ORDERS`), or by a table name prefix or suffix (`ACME_ORDERS`) | `edit multitenant Order table-per-tenant schema` (or `prefix`, `suffix`) | Resolves the table name from the tenant for every statement |
+| None (shared) | One table, no tenant | `edit multitenant Order none` | Nothing |
+
+Oracle VPD is not offered: it is Oracle-specific (see the differentiation roadmap's Oracle section). A database per tenant needs no mapping: it is one deployment per tenant, each with its own connection (5.2).
+
+**Where the tenant comes from.** A definition with any multitenant entity must say, in the descriptor:
+
+```yaml
+tenancy:
+  tenant: ${env:TENANT_ID}          # stdio and desktop bundles: one tenant per process
+  # claim: tenant_id                # HTTP (5.4): read from each caller's validated token
+```
+
+The runtime sets the tenant as an EntityManager property (`eclipselink.tenant-id`) on every call's EntityManager. With `tenant`, every call uses the same tenant; a desktop bundle asks for it in `user_config`. With `claim`, every call uses the tenant in the caller's token, and a token without the claim is refused (`403`). Startup fails if the model has tenant entities and neither is set, or if a definition with no tenant entities sets one.
+
+The tenant is a security boundary only when it comes from a token. In a stdio process, whoever configures the process chooses the tenant, so the database account (requirements 5.0) is still the boundary there; a desktop user who must not see other tenants needs an account that cannot.
+
+**Rules**, checked by `edit` and at startup (6):
+
+- Tenant entities may refer to shared entities (an order line to a product, a customer to a country). Shared entities may not refer to tenant entities, so a shared row never leads to another tenant's data; remove or unlink such a relationship first.
+- Tenant entities are `external` or `writable` (2.8), never `reference`, so no tenant's rows are ever in the shared cache. Per-tenant reference data, such as a tenant's own price list, is `external`.
+- In a definition with tenancy, shared entities are `reference` or `external` (*decided 2026-11-25*). A shared entity cannot be `writable`, because one tenant's agent would change rows every tenant sees.
+- An entity locked through another (`lock-through`) has the same multitenancy as its lock holder.
+- For table per tenant, startup checks the tables of the configured `tenant`. With `claim`, a tenant whose tables are missing gets an error on its first call (`NOT_FOUND`, naming the tenant but no table).
+
+Write operations need no change: EclipseLink sets the tenant column on insert, and updates and deletes match only the caller's tenant's rows, so another tenant's row is `NOT_FOUND`. Paging cursors, the `refresh` hint and `CONFLICT` details carry no tenant.
 
 ## 3. Packaging and running
 
@@ -492,7 +556,7 @@ Output:
 #### `describe_entity`
 
 Input: `{ "entity": "Customer" }` (enum of entity names).
-Output: attributes (name, type, nullable, key, description), relationships (name, target, cardinality), and `jsonSchema` (MOXy-generated JSON Schema of one entity as returned by `find_entity`).
+Output: the entity's `kind` (2.8: `reference`, `external` or `writable`, so an agent knows whether a re-read can change), attributes (name, type, nullable, key, description), relationships (name, target, cardinality), and `jsonSchema` (MOXy-generated JSON Schema of one entity as returned by `find_entity`).
 
 #### `find_entity`
 
@@ -761,7 +825,7 @@ The server is an OAuth **resource server** as the MCP authorization spec defines
   - A caller without it does not see the write tools in `tools/list`, and a direct call to one is refused with `403` before the database is touched (SR-3 per caller).
   - It narrows further, never widens: the definition's `tools.writes` ceiling and the `--writes` switch (3.5.5) still apply, and the database account still enforces its grants.
 - **Audit.** Every audit line (5.5) carries the token's subject (`sub`) and client id (`azp` or `client_id`), never the token.
-- Per-caller row filters, field visibility and multitenancy (requirements 5.1 to 5.6) are the later security model; they will read the same validated claims.
+- The tenant of a multitenant definition comes from a token claim (`tenancy.claim`, 2.9). Per-caller row filters and field visibility (requirements 5.1 to 5.6) are the later security model; they will read the same validated claims.
 
 #### 5.4.4 Configuration
 
@@ -809,7 +873,7 @@ transport:
 ### 5.6 Scaling and availability
 
 - The server is stateless apart from the connection pool and EclipseLink cache, so HTTP instances scale horizontally behind a load balancer with no sticky sessions (5.4.1). Paging cursors are self-contained (encoded query position), so any instance can serve the next page.
-- **Writable entities are never in the shared cache** (*decided 2026-11-25*). Several instances, or several stdio copies on one desktop (3.4), may write the same rows, and a shared cache in one would serve stale reads after another writes. So every entity whose writes are enabled in `tools.writes`, and every entity locked through one of them (`mcp.lock-through`, such as `OrderLine`), is read from the database on every call. The shared cache is off by default already (`eclipselink.cache.shared.default=false`). When caching is turned on later for read-only entities such as `Product`, the runtime keeps writable entities isolated regardless, and startup fails if the definition asks to cache one. Optimistic locking (4.9) still catches concurrent writes to the same row; this rule removes the stale reads before them.
+- **Writable entities are never in the shared cache** (*decided 2026-11-25*; entity kinds in 2.8 make this a per-entity setting). Several instances, or several stdio copies on one desktop (3.4), may write the same rows, and a shared cache in one would serve stale reads after another writes. So every entity whose writes are enabled in `tools.writes`, and every entity locked through one of them (`mcp.lock-through`, such as `OrderLine`), is read from the database on every call. The shared cache is off by default already (`eclipselink.cache.shared.default=false`). Caching is turned on per entity by marking it `reference` (2.8); `external` entities, changed by other systems, stay uncached like writable ones. The runtime keeps writable entities isolated regardless, and startup fails if the definition asks to cache one. Optimistic locking (4.9) still catches concurrent writes to the same row; this rule removes the stale reads before them.
 - The database is the limit: total connections = instances x `pool.max`. Size the pool to the database's capacity, not the client count.
 - The definition is read at startup; deploying a new definition version means a rolling restart.
 - stdio deployments are one process per client session and need no scaling.
@@ -830,6 +894,7 @@ The runtime refuses to start, with a clear message, if any of these fail:
 5. Every report: paths, joins, aggregates, parameter types and uses.
 5a. Every named query: graph and orderBy paths, filter, parameter types and uses; per-query bindings refer only to mapped attributes.
 5b. Every write operation (2.7), whether or not `tools.writes` enables it; every entity in `tools.writes` exists, lists known actions, and is locked if it allows update or delete; and every entity's lock: version attributes are integers, and `mcp.lock-through` names an owning to-one relationship to an entity with a version.
+5c. Entity kinds and tenancy (2.8, 2.9): `tools.writes` lists only `writable` entities; `reference` entities refer only to `reference` entities and are not multitenant; shared entities do not refer to tenant entities; `tenancy` is set exactly when the model has tenant entities; for table per tenant with a fixed `tenant`, that tenant's tables exist.
 6. Every prompt: front matter, argument names used in the body.
 7. Tool name uniqueness (including `report_`, `query_` and write operation names) and MCP name rules.
 
@@ -937,6 +1002,10 @@ java -jar eclipselink-mcp-server.jar edit --definition <dir> [--drivers <dir>] <
 | `set-version <Entity> <attr>` | Makes an integer basic attribute the entity's optimistic lock version (4.9) |
 | `unset-version <Entity>` | Turns the version attribute back into a basic attribute. Refused while write operations or `lock-through` rely on it |
 | `lock-through <Entity> <relationship>` | Locks the entity through an owning to-one relationship whose target has a version (`lock-through OrderLine order`). An empty relationship (`""`) removes it |
+| `set-kind <Entity> reference\|external\|writable [--ttl <duration>]` | Sets the entity's kind (2.8). `--ttl` (`30m`, `1h`, `1d`) applies to `reference` only. Refused for `reference` while the entity refers to a non-reference entity or is multitenant, and for anything but `writable` while `tools.writes` lists it |
+| `multitenant <Entity> single-table <COLUMN>[,<COLUMN>...]` | Makes the entity multitenant with tenant column(s) (2.9). The columns stop being attributes. Refused if a report, query or write uses them, or the entity is `reference` |
+| `multitenant <Entity> table-per-tenant schema\|prefix\|suffix` | Makes the entity multitenant with a table per tenant (2.9) |
+| `multitenant <Entity> none` | Makes the entity shared again. Refused while a shared entity would then refer to a tenant entity |
 
 Every edit is **validated and atomic**. The change is written, and then the whole definition is loaded and started against the database, reports and queries included. If anything fails, the ORM file and every report and query file are restored, and the error is printed ("Edit not applied: Report 'by_region': ... region"). A definition is therefore never left broken. One consequence is that renaming or removing an attribute that a report or query uses is refused until that YAML is updated. The skill therefore simplifies the model before writing reports and queries.
 
@@ -964,3 +1033,4 @@ The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 9. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
 10. ~~Writes.~~ *Decided (2026-11-23): read-only by default; named write operations in `writes/`, enabled per entity and action in `tools.writes` (an entity that allows update or delete must be optimistically locked; integer versions only for now) (2.7, 4.9). No generic write tools.*
 11. ~~HTTP and OAuth.~~ *Decided (2026-11-25): stateless streamable HTTP on Eclipse Jetty; OAuth 2.1 resource server with JWT validation by Nimbus JOSE+JWT and audience = `publicUrl`; one shared account, any authenticated caller reads; writes need a write scope (or configured claim) per caller; writable entities never shared-cached; Keycloak sample for a minimal OAuth setup (5.4, 5.6).*
+12. Entity kinds and multitenancy (2.8, 2.9). *Proposed (2026-11-25):* three kinds, `external` by default, only `reference` cached; multitenancy per entity with single table or table per tenant (no VPD), the tenant fixed per process for stdio or read from a token claim for HTTP; shared entities never refer to tenant entities and cannot be writable in a multitenant definition (*decided 2026-11-25*).

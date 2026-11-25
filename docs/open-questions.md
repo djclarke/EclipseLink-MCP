@@ -21,7 +21,7 @@ Decisions to make before or during the first prototype. Proposed answers are mar
 
 9. **Policy format and location:** single YAML file alongside the model config, or annotations/ORM XML?
 10. **Row filters:** use `@AdditionalCriteria` generated onto dynamic descriptors, or apply criteria in the query tool layer? (Descriptor-level is stronger since it covers relationship traversal.)
-11. **Caching:** isolated cache per caller, shared cache with additional criteria, or no shared cache for filtered entities?
+11. **Caching:** isolated cache per caller, shared cache with additional criteria, or no shared cache for filtered entities? *Proposed (2026-11-25): no shared cache except for `reference` entities, which are read-only, shared across tenants and never multitenant. External (back-end changed) and writable entities are read from the database every call (requirements 4.11, server-definition 2.8).*
 12. **Audit sink:** log file, database table, or OpenTelemetry?
 13. **Connection pooling:** EclipseLink's internal pool, or an external `DataSource` such as HikariCP? *Decided: internal pool for milestone 1, with a config switch to an external `DataSource` for the HTTP/multi-user milestone (see NFR-6).*
 
