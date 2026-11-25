@@ -141,7 +141,10 @@ public final class ToolService {
                             "id", Map.of("description", "Primary key value, or an object of key attributes"),
                             "select", selectParam(),
                             "depth", Map.of("type", "integer", "minimum", 0, "maximum", limits.maxDepth(),
-                                    "description", "Levels of to-one relationships to nest (default 1)")),
+                                    "description", "Levels of to-one relationships to nest (default 1)"),
+                            "refresh", Map.of("type", "boolean",
+                                    "description", "Read the entity and the related entities it returns from the "
+                                            + "database, never from a cache. Use after a CONFLICT (default false)")),
                             List.of("entity", "id")),
                     this::findEntity));
         }
@@ -239,7 +242,7 @@ public final class ToolService {
     private Map<String, Object> runWrite(NamedWrite write, Map<String, Object> args) {
         EntityManager em = model.createEntityManager();
         try {
-            return write.run(em, args, json, dryRun);
+            return write.run(em, args, json, dryRun, tools.containsKey("find_entity"));
         } finally {
             em.close();
         }
@@ -392,6 +395,12 @@ public final class ToolService {
         ReadAllQuery q = new ReadAllQuery(d.getJavaClass(), eb);
         q.setSelectionCriteria(where);
         q.setIsReadOnly(true);
+        if (Boolean.TRUE.equals(args.get("refresh"))) {
+            // After a CONFLICT the agent must see the database's state: refresh the entity and, through the
+            // cascade, the related entities the load graph brings in, whatever caching is configured.
+            q.refreshIdentityMapResult();
+            q.cascadeAllParts();
+        }
         LoadGraph.of(d, selection != null ? selection.paths() : LoadGraph.toOnePaths(d, depth))
                 .applyTo(q, eb, limits.maxPageSize());
         EntityManager em = model.createEntityManager();

@@ -400,6 +400,8 @@ Input:
   "depth": 1 }
 ```
 
+`"refresh": true` reads the entity, and every related entity the call returns, from the database rather than any cache (EclipseLink refresh with cascade to all parts). The shared cache is off by default (`eclipselink.cache.shared.default=false`), so this matters once caching is enabled, but agents should pass it after a `CONFLICT` either way.
+
 `id` is a scalar, or an object for composite keys. `select` is optional (default: all attributes, relationships to `depth`).
 Output: `{ "entity": "Order", "item": { ... } }`, or error `NOT_FOUND`.
 
@@ -542,13 +544,20 @@ Every write is checked with optimistic locking, and the server keeps no state be
 
 **What a write does**, in one transaction:
 
-1. Reads the row by key (for update and delete) and the lock holder: the row itself, or the relationship's target (for create, the target named in the input).
-2. Compares the lock holder's current version with the caller's. A difference is `CONFLICT`, with `details: { entity, id, expectedVersion, currentVersion }` and nothing changed.
+1. Reads the row by key (for update and delete) and the lock holder: the row itself, or the relationship's target (for create, the target named in the input). The read refreshes from the database, so the check never compares against a cached copy.
+2. Compares the lock holder's current version with the caller's. A difference is `CONFLICT`, with `details: { entity, id, expectedVersion, currentVersion, refresh }` and nothing changed.
 3. Checks the `condition` (on the new row for create, after it is flushed). A mismatch is `PRECONDITION_FAILED`.
 4. Applies the change. EclipseLink writes `UPDATE ... SET VERSION = v + 1 ... WHERE ID = ? AND VERSION = v` (or `DELETE ... WHERE ... AND VERSION = v`). A lock held through a relationship is incremented with `OPTIMISTIC_FORCE_INCREMENT`, so adding, changing or removing a line also updates its order's version.
 5. Commits. If another writer changed the row between steps 1 and 4, the database matches no row and the call is a `CONFLICT` too, so the check holds across concurrent servers and other applications that maintain the version column.
 
-The `CONFLICT` message tells the agent what to do: read the entity again, check that the change still makes sense with the new data, and retry with the new version. It should not retry blindly.
+Both kinds of `CONFLICT` tell the agent what to do, in the message, in the write tool's description, and in the server instructions:
+
+1. Nothing was changed, so do not retry straight away.
+2. Read the lock holder again with the call in `details.refresh`, for example `{ "tool": "find_entity", "arguments": { "entity": "Order", "id": 1006, "refresh": true } }`. (It is left out when `find_entity` is disabled; the message then says to read the entity again.)
+3. Compare the current state with the change it meant to make, and tell the user what is different.
+4. Retry with the new version only if the change still applies to the new state, asking the user when unsure.
+
+The step 5 `CONFLICT` has `details: { entity, id, refresh }` and no versions, since the database's version is only known after the read.
 
 **Other outcomes.** `NOT_FOUND` (no row with that key, or a relationship target in the input that does not exist), `ALREADY_EXISTS` (a create whose key exists), `CONSTRAINT_VIOLATION` (the database refused the change: not null, unique, foreign key or check; SQLState class 23), `INVALID_PARAMETER` (a value that does not fit its type, its `allowed` list or its column; class 22), and `PERMISSION_DENIED` (the account lacks the grant, 5.0 of the requirements).
 

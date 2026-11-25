@@ -258,9 +258,50 @@ class WriteToolsTest {
         // A second agent read the order while it was open, and tries to cancel it with that version.
         ToolException e = fails(ToolException.Code.CONFLICT, "update_order", "id", 1006, "version", 1,
                 "status", "CANCELLED");
-        assertEquals(Map.of("entity", "Order", "id", 1006L, "expectedVersion", 1, "currentVersion", 2), e.details());
-        assertTrue(e.getMessage().contains("Read it again"), e.getMessage());
+        Map<String, Object> refresh = Map.of("tool", "find_entity",
+                "arguments", Map.of("entity", "Order", "id", 1006L, "refresh", true));
+        assertEquals(Map.of("entity", "Order", "id", 1006L, "expectedVersion", 1, "currentVersion", 2,
+                "refresh", refresh), e.details());
+        // The agent is told to read again, compare, involve the user, and not retry blindly.
+        for (String s : List.of("Nothing was changed", "Do not retry straight away",
+                "call find_entity with {\"entity\":\"Order\",\"id\":1006,\"refresh\":true}",
+                "compare it with the change you meant to make", "tell the user what is different",
+                "Retry with version 2 only if the change still applies", "ask the user")) {
+            assertTrue(e.getMessage().contains(s), s + " in: " + e.getMessage());
+        }
         assertEquals("SHIPPED", db("SELECT STATUS FROM ORDERS WHERE ID = 1006"));
+
+        // The refresh call it names works as given, and returns the current state and version.
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        ((Map<?, ?>) refresh.get("arguments")).forEach((k, v) -> arguments.put((String) k, v));
+        Map<?, ?> item = (Map<?, ?>) tools.call("find_entity", arguments).get("item");
+        assertEquals("SHIPPED", item.get("status"));
+        assertEquals(2, item.get("version"));
+    }
+
+    @Test
+    void aRefreshingReadReturnsTheDatabaseStateOfTheEntityAndItsRelationships() {
+        // Read once so the model has seen the rows, then change them outside the server.
+        call("find_entity", "entity", "Order", "id", 1005, "select", List.of("total", "customer.name", "lines.quantity"));
+        TestDatabase.execute(env, "UPDATE ORDERS SET TOTAL = 13000.00, VERSION = VERSION + 1 WHERE ID = 1005");
+        TestDatabase.execute(env, "UPDATE CUSTOMER SET NAME = 'Renamed' WHERE ID = (SELECT CUSTOMER_ID FROM ORDERS "
+                + "WHERE ID = 1005)");
+        TestDatabase.execute(env, "UPDATE ORDER_LINE SET QUANTITY = QUANTITY + 100 WHERE ORDER_ID = 1005");
+        Map<?, ?> item = (Map<?, ?>) call("find_entity", "entity", "Order", "id", 1005, "refresh", true,
+                "select", List.of("total", "version", "customer.name", "lines.quantity")).get("item");
+        assertEquals("13000.00", item.get("total"));
+        assertEquals(2, item.get("version"));
+        assertEquals("Renamed", ((Map<?, ?>) item.get("customer")).get("name"));
+        for (Object line : (List<?>) item.get("lines")) {
+            assertTrue(((Number) ((Map<?, ?>) line).get("quantity")).intValue() > 100, line.toString());
+        }
+    }
+
+    @Test
+    void conflictGuidanceWithoutFindEntityStillSaysToReadAgainAndAsk() {
+        String s = io.github.djclarke.eclipselink.mcp.write.NamedWrite.conflictGuidance("Order", 1006, false,
+                "version 2");
+        assertTrue(s.contains("read Order 1006 again") && s.contains("ask the user") && !s.contains("find_entity"), s);
     }
 
     @Test
@@ -338,6 +379,15 @@ class WriteToolsTest {
         String description = tools.tools().stream().filter(t -> t.name().equals("create_order")).findFirst()
                 .orElseThrow().description();
         assertTrue(description.contains("Sets total to the sum of quantity × price over the lines"), description);
+    }
+
+    @Test
+    void lockedWriteDescriptionsSayHowToHandleAConflict() {
+        for (String name : List.of("update_order", "update_customer", "add_order_line")) {
+            String d = tools.tools().stream().filter(t -> t.name().equals(name)).findFirst().orElseThrow().description();
+            assertTrue(d.contains("On CONFLICT nothing is changed") && d.contains("details.refresh")
+                    && d.contains("ask the user") && d.contains("Never retry blindly"), name + ": " + d);
+        }
     }
 
     // ---- locked through a relationship ------------------------------------------------------------------------

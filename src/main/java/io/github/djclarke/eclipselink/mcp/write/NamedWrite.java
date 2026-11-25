@@ -430,6 +430,11 @@ public final class NamedWrite {
         return lock;
     }
 
+    /** How a tool description tells the agent to handle CONFLICT (spec 4.9). */
+    private static final String CONFLICT_HELP = " On CONFLICT nothing is changed: read the %s again (the error's "
+            + "details.refresh is the call to make), compare it with the change you meant, and retry with the new "
+            + "version only if the change still applies; ask the user when unsure. Never retry blindly.";
+
     /** Tool description: the definition's own, then what the call needs and does. */
     public String toolDescription() {
         StringBuilder sb = new StringBuilder();
@@ -445,11 +450,13 @@ public final class NamedWrite {
             sb.append(" No optimistic lock: the last write wins.");
         } else if (lock.through() == null) {
             if (action != Action.CREATE) {
-                sb.append(" Pass the '").append(lock.inputName()).append("' you read; on CONFLICT read it again.");
+                sb.append(" Pass the '").append(lock.inputName()).append("' you read.");
+                sb.append(CONFLICT_HELP.formatted(lock.holder().getAlias()));
             }
         } else {
             sb.append(" Pass '").append(lock.inputName()).append("', the version of the ").append(lock.holder().getAlias())
                     .append(" it belongs to; the call checks it and returns the new one in 'locked'.");
+            sb.append(CONFLICT_HELP.formatted(lock.holder().getAlias()));
         }
         part.describe(sb);
         for (ItemsPart i : items) {
@@ -551,22 +558,24 @@ public final class NamedWrite {
      * Runs the operation in its own transaction.
      *
      * @param dryRun flush (so the database checks constraints and versions), then roll back
+     * @param canFind whether find_entity is exposed, so a CONFLICT can name it as the way to read again
      */
-    public Map<String, Object> run(EntityManager em, Map<String, Object> args, EntityJson json, boolean dryRun) {
+    public Map<String, Object> run(EntityManager em, Map<String, Object> args, EntityJson json, boolean dryRun,
+            boolean canFind) {
         checkArguments(args);
         em.getTransaction().begin();
+        DynamicEntity holder = null;
         try {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("operation", definition.name());
             out.put("action", action.name().toLowerCase(java.util.Locale.ROOT));
             out.put("entity", root.getAlias());
-            DynamicEntity holder;
             switch (action) {
                 case CREATE -> {
                     DynamicEntity entity = create(em, args);
                     Map<ItemsPart, List<DynamicEntity>> created = createItems(em, entity, args);
                     holder = lockHolderOf(entity);
-                    checkVersion(holder, args);
+                    checkVersion(holder, args, canFind);
                     forceIncrement(em, holder);
                     em.persist(entity);
                     created.values().forEach(rows -> rows.forEach(em::persist));
@@ -579,7 +588,7 @@ public final class NamedWrite {
                 case UPDATE -> {
                     DynamicEntity entity = find(em, root, args.get("id"), "id");
                     holder = lockHolderOf(entity);
-                    checkVersion(holder, args);
+                    checkVersion(holder, args, canFind);
                     checkCondition(em, args.get("id"));
                     part.apply(em, entity, args, action);
                     forceIncrement(em, holder);
@@ -589,7 +598,7 @@ public final class NamedWrite {
                 default -> {
                     DynamicEntity entity = find(em, root, args.get("id"), "id");
                     holder = lockHolderOf(entity);
-                    checkVersion(holder, args);
+                    checkVersion(holder, args, canFind);
                     checkCondition(em, args.get("id"));
                     forceIncrement(em, holder);
                     em.remove(entity);
@@ -613,7 +622,7 @@ public final class NamedWrite {
             }
             return out;
         } catch (PersistenceException | DatabaseException | OptimisticLockException e) {
-            throw translate(e);
+            throw translate(e, holder, canFind);
         } finally {
             if (em.getTransaction().isActive()) {
                 em.getTransaction().rollback();
@@ -745,22 +754,53 @@ public final class NamedWrite {
     }
 
     /** Compares the caller's version with the lock holder's current one (spec 4.9 step 2). */
-    private void checkVersion(DynamicEntity holder, Map<String, Object> args) {
+    private void checkVersion(DynamicEntity holder, Map<String, Object> args, boolean canFind) {
         if (lock == null || holder == null || (action == Action.CREATE && lock.through() == null)) {
             return;
         }
         Object expected = Mappings.convert(args.get(lock.inputName()), lock.versionType(), lock.inputName());
         Object current = holder.get(lock.versionAttribute());
         if (!Objects.equals(asLong(expected), asLong(current))) {
+            String entity = lock.holder().getAlias();
+            Object id = Mappings.keyValue(lock.holder(), holder);
             Map<String, Object> details = new LinkedHashMap<>();
-            details.put("entity", lock.holder().getAlias());
-            details.put("id", Mappings.keyValue(lock.holder(), holder));
+            details.put("entity", entity);
+            details.put("id", id);
             details.put("expectedVersion", expected);
             details.put("currentVersion", current);
-            throw new ToolException(Code.CONFLICT, lock.holder().getAlias() + " "
-                    + Mappings.keyValue(lock.holder(), holder) + " has changed since you read it (version " + current
-                    + ", you sent " + expected + "). Read it again, check the change still makes sense with the "
-                    + "new data, and retry with " + lock.inputName() + " " + current + ".", details);
+            putRefresh(details, entity, id, canFind);
+            throw new ToolException(Code.CONFLICT, entity + " " + id + " has changed since you read it (version "
+                    + current + ", you sent " + expected + "). " + conflictGuidance(entity, id, canFind,
+                    lock.inputName() + " " + current), details);
+        }
+    }
+
+    /**
+     * What the agent must do after a CONFLICT (spec 4.9): nothing was changed; read the entity again, compare it
+     * with the intended change, and retry only if the change still applies, asking the user when in doubt.
+     */
+    public static String conflictGuidance(String entity, Object id, boolean canFind, String retryWith) {
+        String read = canFind
+                ? "call find_entity with " + io.github.djclarke.eclipselink.mcp.tools.Json.write(
+                        refreshArguments(entity, id)) + " to get its current state"
+                : "read " + entity + " " + id + " again to get its current state";
+        return "Nothing was changed. Do not retry straight away: first " + read + ", compare it with the change "
+                + "you meant to make, and tell the user what is different. Retry with " + retryWith + " only if the "
+                + "change still applies to the new state; if you are not sure, ask the user before retrying.";
+    }
+
+    private static Map<String, Object> refreshArguments(String entity, Object id) {
+        Map<String, Object> a = new LinkedHashMap<>();
+        a.put("entity", entity);
+        a.put("id", id);
+        a.put("refresh", true);
+        return a;
+    }
+
+    /** {@code details.refresh}: the exact read call to make before deciding whether to retry. */
+    private static void putRefresh(Map<String, Object> details, String entity, Object id, boolean canFind) {
+        if (canFind && id != null) {
+            details.put("refresh", Map.of("tool", "find_entity", "arguments", refreshArguments(entity, id)));
         }
     }
 
@@ -804,16 +844,29 @@ public final class NamedWrite {
         }
         ReadAllQuery q = new ReadAllQuery(d.getJavaClass(), eb);
         q.setSelectionCriteria(where);
+        // The version check compares against the database, never a cached copy.
+        q.refreshIdentityMapResult();
+        q.cascadeAllParts();
         return JpaHelper.createQuery(q, em).setMaxResults(1).getResultList();
     }
 
     /** Database failures as agent-facing codes, without SQL (spec 4.9). Unknown ones go to DATABASE_ERROR. */
-    private RuntimeException translate(RuntimeException e) {
+    private RuntimeException translate(RuntimeException e, DynamicEntity holder, boolean canFind) {
         for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
             if (t instanceof OptimisticLockException || t instanceof jakarta.persistence.OptimisticLockException) {
-                String holder = lock == null ? root.getAlias() : lock.holder().getAlias();
-                return new ToolException(Code.CONFLICT, holder + " was changed by another writer while this call "
-                        + "ran. Read it again, check the change still makes sense, and retry with the new version.");
+                ClassDescriptor d = lock == null ? root : lock.holder();
+                String entity = d.getAlias();
+                Object id = holder == null ? null : Mappings.keyValue(d, holder);
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("entity", entity);
+                if (id != null) {
+                    details.put("id", id);
+                }
+                putRefresh(details, entity, id, canFind);
+                String version = lock == null ? "version" : lock.inputName();
+                return new ToolException(Code.CONFLICT, entity + (id == null ? "" : " " + id) + " was changed by "
+                        + "another writer while this call ran. " + conflictGuidance(entity, id == null ? "" : id,
+                        canFind && id != null, "the " + version + " you read then"), details);
             }
             if (t instanceof SQLException sql) {
                 String state = sql.getSQLState() == null ? "" : sql.getSQLState();
