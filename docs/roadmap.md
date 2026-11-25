@@ -27,9 +27,22 @@ Done in the POC: `${env:...}` and `${file:...}` references, the `SecretResolver`
 | P2 | `package --as mcpb --target ...`: desktop bundle per platform, default Eclipse Temurin JRE 21 unchanged | Packaging | Connection settings as `user_config`; passwords `sensitive`. |
 | P3 | `--jdk <target>=<dir>` (jlink) and `--runtime <target>=<dir>` overrides | Packaging | Any vendor, Java 21 or later. No GraalVM. |
 | P4 | `--writes none\|definition` and the bundle's *Allow changes* setting, default off | Packaging | Narrows the definition's writes, never widens them. |
-| P5 | `package --as image` on an `eclipse-temurin` base image | HTTP milestone | With the HTTP transport on Eclipse Jetty (5.4). |
+| P5 | `package --as image` on an `eclipse-temurin` base image | HTTP milestone | Built in H4, with the HTTP transport on Eclipse Jetty (5.4). |
 | P6 | Subset form of `--writes` (`Order:update`) | Later | Checked against the definition at startup. |
 | P7 | Trim the default runtime with `jlink` | Later | Roughly halves bundle size. |
+
+## HTTP and OAuth (spec: [server-definition 5.4](server-definition.md#54-http-endpoint-and-oauth-later-milestone))
+
+Phases in order; sizes are rough working days.
+
+| # | Item | Size | Notes |
+|---|---|---|---|
+| H1 | Stateless streamable HTTP on embedded Jetty, health endpoints, Origin check, localhost-only without auth | 2 to 3 | Usable with MCP Inspector locally. |
+| H2 | OAuth resource server: protected resource metadata, `401`/`403` challenges, JWT validation (Nimbus), audience, write scope per caller, caller in the audit | about 5 | Unit and integration tests with in-test keys. |
+| H3 | Writable entities never shared-cached; two-instance `CONFLICT` test | 1 | Startup check against cache settings. |
+| H4 | `package --as image` (P5) and `samples/hosted`: Compose with Keycloak realm import and PostgreSQL | 3 to 4 | `docker compose up` to a working OAuth setup. |
+| H5 | Claude custom connector end to end; setup pages for Entra ID, Okta, Auth0, Keycloak | about 2 | Longer if a provider needs workarounds. |
+| H6 | Later: opaque tokens (introspection), metrics, per-caller row filters and multitenancy (security model) | | |
 
 ## Other later milestones
 
