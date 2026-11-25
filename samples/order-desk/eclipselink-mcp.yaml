@@ -35,11 +35,13 @@ model:
 tools:
   # Entities that may be written and the actions allowed on each (default: none, read-only). Update and delete
   # need an optimistic lock: Order and Customer have their own version. create_order creates an order's lines
-  # with it, so Order: [create] covers them. An operation in writes/ becomes a tool only when its action is
-  # listed for its entity: the OrderLine operations (lock-through examples) and reprice_product stay hidden,
-  # and nothing can be deleted.
+  # with it, so Order: [create] covers them. OrderLine: [create] exposes add_order_line, which adds a line to
+  # an open order through the order's version. An operation in writes/ becomes a tool only when its action is
+  # listed for its entity: changing or removing a line and reprice_product stay hidden (existing lines are
+  # immutable), and nothing can be deleted.
   writes:
     Order: [create, update]
+    OrderLine: [create]
     Customer: [create, update]
 
 limits:

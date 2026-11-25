@@ -196,8 +196,9 @@ class WriteToolsTest {
                     .forEach(t -> kinds.put(t.name(), t.kind()));
         }
         assertEquals(Map.of("create_order", ToolService.Kind.CREATE, "update_order", ToolService.Kind.UPDATE,
+                "add_order_line", ToolService.Kind.CREATE,
                 "create_customer", ToolService.Kind.CREATE, "update_customer", ToolService.Kind.UPDATE), kinds,
-                "lines cannot be changed once an order is placed, and products are read-only");
+                "lines can be added to an open order but not changed, and products are read-only");
         McpSchema.ToolAnnotations update = McpServerFactory.annotations(ToolService.Kind.UPDATE);
         assertFalse(update.readOnlyHint());
         assertTrue(update.destructiveHint());
@@ -258,15 +259,22 @@ class WriteToolsTest {
         // A second agent read the order while it was open, and tries to cancel it with that version.
         ToolException e = fails(ToolException.Code.CONFLICT, "update_order", "id", 1006, "version", 1,
                 "status", "CANCELLED");
-        Map<String, Object> refresh = Map.of("tool", "find_entity",
-                "arguments", Map.of("entity", "Order", "id", 1006L, "refresh", true));
+        Map<?, ?> refresh = (Map<?, ?>) e.details().get("refresh");
+        assertEquals("find_entity", refresh.get("tool"));
+        Map<?, ?> refreshArgs = (Map<?, ?>) refresh.get("arguments");
+        assertEquals(List.of("entity", "id", "select", "refresh"), List.copyOf(refreshArgs.keySet()));
+        assertEquals("Order", refreshArgs.get("entity"));
+        assertEquals(1006L, refreshArgs.get("id"));
+        assertTrue(((List<?>) refreshArgs.get("select")).containsAll(List.of("status", "total", "customer", "lines")),
+                refreshArgs.toString());
         assertEquals(Map.of("entity", "Order", "id", 1006L, "expectedVersion", 1, "currentVersion", 2,
                 "refresh", refresh), e.details());
         // The agent is told to read again, compare, involve the user, and not retry blindly.
         for (String s : List.of("Nothing was changed", "Do not retry straight away",
-                "call find_entity with {\"entity\":\"Order\",\"id\":1006,\"refresh\":true}",
-                "compare it with the change you meant to make", "tell the user what is different",
-                "Retry with version 2 only if the change still applies", "ask the user")) {
+                "call find_entity with {\"entity\":\"Order\",\"id\":1006,\"select\":[",
+                "\"lines\"],\"refresh\":true} to get the current Order 1006 with all of its lines",
+                "duplicate: your change is already there", "do not repeat it", "tell the user what is different",
+                "still applies: retry with version 2", "ask the user before retrying")) {
             assertTrue(e.getMessage().contains(s), s + " in: " + e.getMessage());
         }
         assertEquals("SHIPPED", db("SELECT STATUS FROM ORDERS WHERE ID = 1006"));
@@ -277,6 +285,8 @@ class WriteToolsTest {
         Map<?, ?> item = (Map<?, ?>) tools.call("find_entity", arguments).get("item");
         assertEquals("SHIPPED", item.get("status"));
         assertEquals(2, item.get("version"));
+        assertEquals(List.of(7L, 8L), ((List<?>) item.get("lines")).stream().map(l -> ((Map<?, ?>) l).get("id"))
+                .sorted().toList(), "all of the order's lines");
     }
 
     @Test
@@ -299,9 +309,10 @@ class WriteToolsTest {
 
     @Test
     void conflictGuidanceWithoutFindEntityStillSaysToReadAgainAndAsk() {
-        String s = io.github.djclarke.eclipselink.mcp.write.NamedWrite.conflictGuidance("Order", 1006, false,
-                "version 2");
-        assertTrue(s.contains("read Order 1006 again") && s.contains("ask the user") && !s.contains("find_entity"), s);
+        String s = io.github.djclarke.eclipselink.mcp.write.NamedWrite.conflictGuidance("Order 1006", null,
+                List.of("lines"), "version 2");
+        assertTrue(s.contains("read Order 1006 with all of its lines again") && s.contains("ask the user")
+                && !s.contains("find_entity"), s);
     }
 
     @Test
@@ -409,6 +420,46 @@ class WriteToolsTest {
                 "product", 2, "quantity", 1);
         assertEquals(2, e.details().get("currentVersion"));
         assertEquals(3L, db("SELECT COUNT(*) FROM ORDER_LINE WHERE ORDER_ID = 1002"));
+        // 5 × 120.00 + 0 × 0.00 + 3 × 25.00 over all its lines: the total is recomputed, and the order is written once (version 1 to 2).
+        assertEquals(0, new java.math.BigDecimal("675.00").compareTo(
+                (java.math.BigDecimal) db("SELECT TOTAL FROM ORDERS WHERE ID = 1002")));
+
+        // The refresh it names brings the order with all its lines, including the first agent's new one, so the
+        // second agent can see whether its line duplicates it.
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        ((Map<?, ?>) ((Map<?, ?>) e.details().get("refresh")).get("arguments"))
+                .forEach((k, v) -> arguments.put((String) k, v));
+        Map<?, ?> order = (Map<?, ?>) tools.call("find_entity", arguments).get("item");
+        assertEquals("675.00", order.get("total"));
+        assertEquals(2, order.get("version"));
+        assertTrue(((List<?>) order.get("lines")).stream().anyMatch(l -> ((Map<?, ?>) l).get("id").equals(1000L)),
+                order.toString());
+        assertTrue(e.getMessage().contains("added the same line"), e.getMessage());
+
+        // It decides its line still applies and retries with the new version.
+        Map<String, Object> second = call("add_order_line", "order", 1002, "orderVersion", 2, "product", 2,
+                "quantity", 1);
+        assertEquals(Map.of("entity", "Order", "id", 1002L, "version", 3), second.get("locked"));
+        assertEquals(0, new java.math.BigDecimal("795.00").compareTo(
+                (java.math.BigDecimal) db("SELECT TOTAL FROM ORDERS WHERE ID = 1002")));
+    }
+
+    @Test
+    void theSampleExposesAddOrderLineForOpenOrdersOnly() throws Exception {
+        try (ModelRuntime sample = ModelRuntime.start(new DefinitionLoader(env::apply)
+                .load(TestDatabase.ORDER_DESK_DEFINITION))) {
+            ToolService t = new ToolService(sample);
+            List<String> names = t.tools().stream().map(x -> x.name()).toList();
+            assertTrue(names.contains("add_order_line"), names.toString());
+            assertFalse(names.contains("change_line_quantity") || names.contains("remove_order_line"), names.toString());
+            String d = t.tools().stream().filter(x -> x.name().equals("add_order_line")).findFirst().orElseThrow()
+                    .description();
+            assertTrue(d.contains("Sets the Order's total to the sum of quantity × price over all of its OrderLine "
+                    + "rows, this one included."), d);
+            ToolException e = assertThrows(ToolException.class, () -> t.call("add_order_line",
+                    args("order", 1001, "orderVersion", 1, "product", 1, "quantity", 1)));
+            assertEquals(ToolException.Code.PRECONDITION_FAILED, e.code(), "1001 is SHIPPED");
+        }
     }
 
     @Test

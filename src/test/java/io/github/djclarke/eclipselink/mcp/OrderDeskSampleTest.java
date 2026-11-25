@@ -29,10 +29,10 @@ import io.github.djclarke.eclipselink.mcp.model.ModelRuntime;
 import io.github.djclarke.eclipselink.mcp.tools.ToolException;
 import io.github.djclarke.eclipselink.mcp.tools.ToolService;
 
-/** The sales-customer sample: init output with writes enabled for Customer only, as the samples README shows. */
-class SalesCustomerSampleTest {
+/** The order-desk sample, the one write sample: the tools it exposes and its customer writes, as the samples README shows. */
+class OrderDeskSampleTest {
 
-    private static final Path DEFINITION = Path.of("samples/sales-customer");
+    private static final Path DEFINITION = TestDatabase.ORDER_DESK_DEFINITION;
 
     Function<String, String> env;
     ModelRuntime model;
@@ -40,7 +40,7 @@ class SalesCustomerSampleTest {
 
     @BeforeEach
     void start() {
-        env = TestDatabase.freshCopy("salesCustomer");
+        env = TestDatabase.freshCopy("orderDeskSample");
         model = ModelRuntime.start(new DefinitionLoader(env).load(DEFINITION));
         tools = new ToolService(model);
     }
@@ -51,9 +51,10 @@ class SalesCustomerSampleTest {
     }
 
     @Test
-    void onlyCustomerCreateAndUpdateAreExposed() {
-        assertEquals(List.of("create_customer", "update_customer"),
-                tools.exposedWrites().stream().map(w -> w.definition().name()).toList());
+    void exposesEveryWriteCapabilityOfTheSample() {
+        assertEquals(java.util.Set.of("create_customer", "update_customer", "create_order", "update_order",
+                        "add_order_line"),
+                java.util.Set.copyOf(tools.exposedWrites().stream().map(w -> w.definition().name()).toList()));
     }
 
     @Test

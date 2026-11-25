@@ -12,7 +12,7 @@
 
 name: add_order_line
 title: Add an order line
-description: Add a product line to an open order, at the product's current price.
+description: "Add a product line to an open order, at the product's current price. Pass the order's version: two people adding lines to the same order at once cannot both succeed, so the second gets CONFLICT and must read the order and its lines again."
 action: create
 root: OrderLine                     # locked through its order: pass orderVersion
 set:
@@ -23,3 +23,5 @@ copy:                               # a snapshot: later product changes do not a
   price: product.price
   productName: product.name
 condition: { path: order.status, op: eq, value: OPEN }
+recompute:                          # the order's total, over all of its lines including this one
+  order.total: [quantity, price]

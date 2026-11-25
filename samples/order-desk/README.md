@@ -10,7 +10,7 @@ The [sales-db](../sales-db) model with writes enabled for orders and customers. 
 | `update_order` | update | Order (status only, while OPEN) | `version` | yes |
 | `create_customer` | create | Customer | starts at version 1 | yes |
 | `update_customer` | update | Customer | `version` | yes |
-| `add_order_line` | create | OrderLine | `orderVersion` (checked and incremented) | no: lines change only when an order is created |
-| `change_line_quantity` | update | OrderLine | `orderVersion` | no |
+| `add_order_line` | create | OrderLine (open orders only) | `orderVersion` (checked and incremented); copies the product's price and name; recomputes the order's total | yes |
+| `change_line_quantity` | update | OrderLine | `orderVersion` | no: existing lines are immutable |
 | `remove_order_line` | delete | OrderLine | `orderVersion` | no |
 | `reprice_product` | update | Product | `version` | no: add `Product: [update]` to `tools.writes` |

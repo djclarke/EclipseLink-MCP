@@ -25,8 +25,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Every source and config file carries the project header (template: {@code etc/copyright-header.txt}),
  * in the comment syntax of its file type. Files that are generated output are exempt: the {@code init}
- * output of {@code samples/sales-db-generated} and {@code samples/sales-customer}, apart from the
- * hand-written writes. See CONTRIBUTING.md.
+ * output of {@code samples/sales-db-generated}. See CONTRIBUTING.md.
  */
 class LicenseHeaderTest {
 
@@ -52,9 +51,6 @@ class LicenseHeaderTest {
     static boolean needsHeader(Path f) {
         String p = f.toString().replace('\\', '/');
         if (p.startsWith("samples/sales-db-generated/")) {
-            return false;
-        }
-        if (p.startsWith("samples/sales-customer/") && !p.startsWith("samples/sales-customer/writes/")) {
             return false;
         }
         return p.startsWith("src/test/resources/META-INF/services/")

@@ -30,8 +30,7 @@ Use the same text in the comment syntax of the file type:
 | SQL | `--` line comments |
 
 Not headed: Markdown docs, `LICENSE.md`, `NOTICE.md`, images, `.gitignore`, and generated output
-(`samples/sales-db-generated`, and the `init` output in `samples/sales-customer`; its hand-written
-`writes/` are headed). Files written by `eclipselink-mcp init` for users carry no header, because they
+(`samples/sales-db-generated`). Files written by `eclipselink-mcp init` for users carry no header, because they
 belong to whoever generates them.
 
 `LicenseHeaderTest` fails the build when a file that needs the header lacks it.

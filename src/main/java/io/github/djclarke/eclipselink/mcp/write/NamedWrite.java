@@ -177,6 +177,16 @@ public final class NamedWrite {
         }
     }
 
+    /**
+     * A lock holder attribute recomputed on create: {@code order.total} as the sum of quantity × price over the
+     * order's lines.
+     *
+     * @param target the holder's attribute
+     * @param factors the root's attributes multiplied for each row
+     */
+    private record Recompute(DatabaseMapping target, List<DatabaseMapping> factors) {
+    }
+
     private final WriteDefinition definition;
     private final ClassDescriptor root;
     private final Action action;
@@ -184,9 +194,11 @@ public final class NamedWrite {
     private final List<String> keyInputs;
     private final Part part;
     private final List<ItemsPart> items;
+    private final List<Recompute> recompute;
 
     private NamedWrite(WriteDefinition definition, ClassDescriptor root, Action action, Lock lock,
-                       List<String> keyInputs, Part part, List<ItemsPart> items) {
+                       List<String> keyInputs, Part part, List<ItemsPart> items, List<Recompute> recompute) {
+        this.recompute = recompute;
         this.definition = definition;
         this.root = root;
         this.action = action;
@@ -247,7 +259,8 @@ public final class NamedWrite {
                     throw new DefinitionException(where + "'" + k + "' is both a key and items");
                 }
             }
-            return new NamedWrite(def, root, action, lock, keyInputs, part, items);
+            return new NamedWrite(def, root, action, lock, keyInputs, part, items,
+                    compileRecompute(def, root, action, lock, where));
         } catch (ToolException e) {
             throw new DefinitionException(where + e.getMessage(), e);
         }
@@ -432,8 +445,77 @@ public final class NamedWrite {
 
     /** How a tool description tells the agent to handle CONFLICT (spec 4.9). */
     private static final String CONFLICT_HELP = " On CONFLICT nothing is changed: read the %s again (the error's "
-            + "details.refresh is the call to make), compare it with the change you meant, and retry with the new "
-            + "version only if the change still applies; ask the user when unsure. Never retry blindly.";
+            + "details.refresh is the call to make; it includes rows other users added), compare it with the change "
+            + "you meant, and decide: already there (a duplicate, do not repeat it), now a conflict (ask the user), "
+            + "or still applies (retry with the new version). Never retry blindly.";
+
+    /** {@code recompute}: on create, attributes of the lock holder reached through the lock-through relationship. */
+    private static List<Recompute> compileRecompute(WriteDefinition def, ClassDescriptor root, Action action,
+                                                    Lock lock, String where) {
+        List<Recompute> out = new ArrayList<>();
+        for (Map.Entry<String, List<String>> e : def.recompute().entrySet()) {
+            String at = where + "recompute '" + e.getKey() + "': ";
+            if (action != Action.CREATE) {
+                throw new DefinitionException(at + "only create operations can recompute");
+            }
+            String[] path = e.getKey().split("\\.");
+            if (lock == null || lock.through() == null || path.length != 2
+                    || !path[0].equals(lock.through().getAttributeName())) {
+                throw new DefinitionException(at + "must be <relationship>.<attribute>, where the relationship is the "
+                        + "one " + root.getAlias() + " is locked through, so the holder's version guards the result");
+            }
+            DatabaseMapping target = lock.holder().getMappingForAttributeName(path[1]);
+            if (target == null || !target.isDirectToFieldMapping() || !isNumber(Mappings.attributeType(target))
+                    || path[1].equals(lock.versionAttribute())) {
+                throw new DefinitionException(at + "'" + path[1] + "' must be a numeric attribute of "
+                        + lock.holder().getAlias());
+            }
+            List<DatabaseMapping> factors = new ArrayList<>();
+            for (String f : e.getValue() == null ? List.<String>of() : e.getValue()) {
+                DatabaseMapping fm = root.getMappingForAttributeName(f);
+                if (fm == null || !fm.isDirectToFieldMapping() || !isNumber(Mappings.attributeType(fm))) {
+                    throw new DefinitionException(at + "factor '" + f + "' must be a numeric attribute of "
+                            + root.getAlias());
+                }
+                factors.add(fm);
+            }
+            if (factors.isEmpty()) {
+                throw new DefinitionException(at + "needs at least one attribute");
+            }
+            out.add(new Recompute(target, List.copyOf(factors)));
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * Sets each recomputed holder attribute: the sum over the rows already in the database (read without a
+     * flush, so the holder is written once, with its version increment) plus this new row.
+     */
+    private void recompute(EntityManager em, DynamicEntity entity, DynamicEntity holder) {
+        for (Recompute r : recompute) {
+            ExpressionBuilder eb = new ExpressionBuilder();
+            Expression product = null;
+            for (DatabaseMapping f : r.factors()) {
+                Expression x = eb.get(f.getAttributeName());
+                product = product == null ? x : org.eclipse.persistence.expressions.ExpressionMath.multiply(product, x);
+            }
+            org.eclipse.persistence.queries.ReportQuery q = new org.eclipse.persistence.queries.ReportQuery(
+                    root.getJavaClass(), eb);
+            q.setSelectionCriteria(eb.get(lock.through().getAttributeName()).equal(holder));
+            q.addSum("sum", product);
+            q.setShouldReturnSingleValue(true);
+            Object existing = JpaHelper.createQuery(q, em).setFlushMode(jakarta.persistence.FlushModeType.COMMIT)
+                    .getSingleResult();
+            BigDecimal total = existing == null ? BigDecimal.ZERO : new BigDecimal(existing.toString());
+            BigDecimal mine = BigDecimal.ONE;
+            for (DatabaseMapping f : r.factors()) {
+                Object n = entity.get(f.getAttributeName());
+                mine = n == null ? BigDecimal.ZERO : mine.multiply(new BigDecimal(n.toString()));
+            }
+            String name = r.target().getAttributeName();
+            holder.set(name, Mappings.convert(total.add(mine), Mappings.attributeType(r.target()), name));
+        }
+    }
 
     /** Tool description: the definition's own, then what the call needs and does. */
     public String toolDescription() {
@@ -471,6 +553,12 @@ public final class NamedWrite {
             i.sum().forEach((t, f) -> sb.append(" Sets ").append(t.getAttributeName()).append(" to the sum of ")
                     .append(String.join(" × ", f.stream().map(DatabaseMapping::getAttributeName).toList()))
                     .append(" over the ").append(i.name()).append('.'));
+        }
+        for (Recompute r : recompute) {
+            sb.append(" Sets the ").append(lock.holder().getAlias()).append("'s ").append(r.target().getAttributeName())
+                    .append(" to the sum of ")
+                    .append(String.join(" × ", r.factors().stream().map(DatabaseMapping::getAttributeName).toList()))
+                    .append(" over all of its ").append(root.getAlias()).append(" rows, this one included.");
         }
         if (definition.condition() != null) {
             sb.append(" Only when: ").append(io.github.djclarke.eclipselink.mcp.tools.Json.write(definition.condition()))
@@ -576,6 +664,7 @@ public final class NamedWrite {
                     Map<ItemsPart, List<DynamicEntity>> created = createItems(em, entity, args);
                     holder = lockHolderOf(entity);
                     checkVersion(holder, args, canFind);
+                    recompute(em, entity, holder);
                     forceIncrement(em, holder);
                     em.persist(entity);
                     created.values().forEach(rows -> rows.forEach(em::persist));
@@ -768,39 +857,82 @@ public final class NamedWrite {
             details.put("id", id);
             details.put("expectedVersion", expected);
             details.put("currentVersion", current);
-            putRefresh(details, entity, id, canFind);
+            putRefresh(details, id, canFind);
             throw new ToolException(Code.CONFLICT, entity + " " + id + " has changed since you read it (version "
-                    + current + ", you sent " + expected + "). " + conflictGuidance(entity, id, canFind,
-                    lock.inputName() + " " + current), details);
+                    + current + ", you sent " + expected + "). " + conflictGuidance(entity + " " + id,
+                    canFind ? refreshArguments(id) : null, children(), lock.inputName() + " " + current), details);
         }
     }
 
     /**
-     * What the agent must do after a CONFLICT (spec 4.9): nothing was changed; read the entity again, compare it
-     * with the intended change, and retry only if the change still applies, asking the user when in doubt.
+     * What the agent must do after a CONFLICT (spec 4.9). Nothing was changed. Read the entity again (with the
+     * rows locked through it, such as an order's lines), compare it with the intended change, and decide: already
+     * there (a duplicate, not to be repeated), now in conflict (ask the user), or still applicable (retry).
+     *
+     * @param what the entity and key, e.g. "Order 1006"
+     * @param refresh the find_entity arguments to read it again, or null when find_entity is not exposed
+     * @param children the entities locked through it that the read includes, e.g. ["lines"]
+     * @param retryWith the version input and value to retry with, e.g. "version 2"
      */
-    public static String conflictGuidance(String entity, Object id, boolean canFind, String retryWith) {
-        String read = canFind
-                ? "call find_entity with " + io.github.djclarke.eclipselink.mcp.tools.Json.write(
-                        refreshArguments(entity, id)) + " to get its current state"
-                : "read " + entity + " " + id + " again to get its current state";
-        return "Nothing was changed. Do not retry straight away: first " + read + ", compare it with the change "
-                + "you meant to make, and tell the user what is different. Retry with " + retryWith + " only if the "
-                + "change still applies to the new state; if you are not sure, ask the user before retrying.";
+    public static String conflictGuidance(String what, Map<String, Object> refresh, List<String> children,
+                                          String retryWith) {
+        String with = children.isEmpty() ? "" : " with all of its " + String.join(" and ", children);
+        String read = refresh != null
+                ? "call find_entity with " + io.github.djclarke.eclipselink.mcp.tools.Json.write(refresh)
+                        + " to get the current " + what + with
+                : "read " + what + with + " again";
+        return "Nothing was changed. Do not retry straight away. First " + read + ", then compare it with the change "
+                + "you meant to make and decide which case applies: (1) duplicate: your change is already there, for "
+                + "example another user made the same edit or added the same line, so do not repeat it; (2) "
+                + "conflict: the new state makes your change wrong or doubtful, so tell the user what is different "
+                + "and ask what to do; (3) still applies: retry with " + retryWith + ". If you are not sure which, "
+                + "ask the user before retrying.";
     }
 
-    private static Map<String, Object> refreshArguments(String entity, Object id) {
+    /** The holder's one-to-many relationships whose rows are locked through it (an order's lines). */
+    private List<String> children() {
+        List<String> out = new ArrayList<>();
+        if (lock == null) {
+            return out;
+        }
+        for (DatabaseMapping m : Mappings.of(lock.holder())) {
+            if (m.isCollectionMapping() && m.getReferenceDescriptor() != null) {
+                Lock child = Lock.of(m.getReferenceDescriptor());
+                if (child != null && child.through() != null && child.holder() == lock.holder()) {
+                    out.add(m.getAttributeName());
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * find_entity arguments that read the holder fresh from the database: its attributes and to-one references,
+     * and, when rows are locked through it, all of those rows, so the agent sees what other writers added.
+     */
+    private Map<String, Object> refreshArguments(Object id) {
+        ClassDescriptor d = lock == null ? root : lock.holder();
         Map<String, Object> a = new LinkedHashMap<>();
-        a.put("entity", entity);
+        a.put("entity", d.getAlias());
         a.put("id", id);
+        List<String> children = children();
+        if (!children.isEmpty()) {
+            List<String> select = new ArrayList<>();
+            for (DatabaseMapping m : Mappings.of(d)) {
+                if (!m.isCollectionMapping() || children.contains(m.getAttributeName())) {
+                    select.add(m.getAttributeName());
+                }
+            }
+            a.put("select", select);
+        }
         a.put("refresh", true);
         return a;
     }
 
     /** {@code details.refresh}: the exact read call to make before deciding whether to retry. */
-    private static void putRefresh(Map<String, Object> details, String entity, Object id, boolean canFind) {
+    private void putRefresh(Map<String, Object> details, Object id, boolean canFind) {
         if (canFind && id != null) {
-            details.put("refresh", Map.of("tool", "find_entity", "arguments", refreshArguments(entity, id)));
+            details.put("refresh", Map.of("tool", "find_entity", "arguments", refreshArguments(id)));
         }
     }
 
@@ -862,11 +994,12 @@ public final class NamedWrite {
                 if (id != null) {
                     details.put("id", id);
                 }
-                putRefresh(details, entity, id, canFind);
+                putRefresh(details, id, canFind);
                 String version = lock == null ? "version" : lock.inputName();
                 return new ToolException(Code.CONFLICT, entity + (id == null ? "" : " " + id) + " was changed by "
-                        + "another writer while this call ran. " + conflictGuidance(entity, id == null ? "" : id,
-                        canFind && id != null, "the " + version + " you read then"), details);
+                        + "another writer while this call ran. " + conflictGuidance(entity + (id == null ? "" : " " + id),
+                        canFind && id != null ? refreshArguments(id) : null, children(),
+                        "the " + version + " you read then"), details);
             }
             if (t instanceof SQLException sql) {
                 String state = sql.getSQLState() == null ? "" : sql.getSQLState();

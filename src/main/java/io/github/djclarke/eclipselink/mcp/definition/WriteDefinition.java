@@ -30,6 +30,9 @@ import java.util.Set;
  *             product.price}, so the row keeps a snapshot of values that may change later
  * @param items create only: one-to-many relationships whose rows are created in the same call, by name (an
  *              order's {@code lines})
+ * @param recompute create only: attributes of the lock holder the server recomputes as the sum, over all rows of
+ *                  the root's entity that belong to it (this one included), of the product of these attributes, e.g.
+ *                  {@code order.total: [quantity, price]}
  */
 public record WriteDefinition(
         String name,
@@ -42,7 +45,8 @@ public record WriteDefinition(
         Map<String, Object> condition,
         String locking,
         LinkedHashMap<String, String> copy,
-        LinkedHashMap<String, Items> items) {
+        LinkedHashMap<String, Items> items,
+        LinkedHashMap<String, List<String>> recompute) {
 
     public static final Set<String> ACTIONS = Set.of("create", "update", "delete");
 
@@ -51,6 +55,7 @@ public record WriteDefinition(
         fixed = fixed == null ? new LinkedHashMap<>() : fixed;
         copy = copy == null ? new LinkedHashMap<>() : copy;
         items = items == null ? new LinkedHashMap<>() : items;
+        recompute = recompute == null ? new LinkedHashMap<>() : recompute;
     }
 
     /** Tool name for this operation: its name, as written. */
