@@ -325,7 +325,7 @@ The tenant is a security boundary only when it comes from a token. In a stdio pr
 
 - Tenant entities may refer to shared entities (an order line to a product, a customer to a country). Shared entities may not refer to tenant entities, so a shared row never leads to another tenant's data; remove or unlink such a relationship first.
 - Tenant entities are `external` or `writable` (2.8), never `reference`, so no tenant's rows are ever in the shared cache. Per-tenant reference data, such as a tenant's own price list, is `external`.
-- In a definition with tenancy, shared entities are `reference` or `external`. *Proposed:* a shared entity cannot be `writable`, because one tenant's agent would change rows every tenant sees.
+- In a definition with tenancy, shared entities are `reference` or `external` (*decided 2026-11-25*). A shared entity cannot be `writable`, because one tenant's agent would change rows every tenant sees.
 - An entity locked through another (`lock-through`) has the same multitenancy as its lock holder.
 - For table per tenant, startup checks the tables of the configured `tenant`. With `claim`, a tenant whose tables are missing gets an error on its first call (`NOT_FOUND`, naming the tenant but no table).
 
@@ -1033,4 +1033,4 @@ The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 9. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
 10. ~~Writes.~~ *Decided (2026-11-23): read-only by default; named write operations in `writes/`, enabled per entity and action in `tools.writes` (an entity that allows update or delete must be optimistically locked; integer versions only for now) (2.7, 4.9). No generic write tools.*
 11. ~~HTTP and OAuth.~~ *Decided (2026-11-25): stateless streamable HTTP on Eclipse Jetty; OAuth 2.1 resource server with JWT validation by Nimbus JOSE+JWT and audience = `publicUrl`; one shared account, any authenticated caller reads; writes need a write scope (or configured claim) per caller; writable entities never shared-cached; Keycloak sample for a minimal OAuth setup (5.4, 5.6).*
-12. Entity kinds and multitenancy (2.8, 2.9). *Proposed (2026-11-25):* three kinds, `external` by default, only `reference` cached; multitenancy per entity with single table or table per tenant (no VPD), the tenant fixed per process for stdio or read from a token claim for HTTP; shared entities never refer to tenant entities and cannot be writable in a multitenant definition.
+12. Entity kinds and multitenancy (2.8, 2.9). *Proposed (2026-11-25):* three kinds, `external` by default, only `reference` cached; multitenancy per entity with single table or table per tenant (no VPD), the tenant fixed per process for stdio or read from a token claim for HTTP; shared entities never refer to tenant entities and cannot be writable in a multitenant definition (*decided 2026-11-25*).
