@@ -83,9 +83,12 @@ limits:
 
 transport:
   type: stdio                       # stdio | http
-  # http:
+  # http:                           # see 5.4
+  #   publicUrl: https://mcp.example.com/sales   # canonical URL clients use; also the token audience
   #   port: 8080
   #   path: /mcp
+  #   auth:
+  #     issuer: https://login.example.com/realms/sales   # the only required auth setting
 
 logging:
   level: info
@@ -729,24 +732,84 @@ A resolver implements `SecretResolver` (`scheme()`, `resolve(reference, definiti
 - *Proposed:* warn at startup when a `file` secret can be read by other users.
 - The database account should be read-only and limited to the mapped tables. The runtime opens connections read-only where the driver supports it.
 
-### 5.4 HTTP endpoint (later milestone)
+### 5.4 HTTP endpoint and OAuth (later milestone)
 
-- MCP streamable HTTP transport at `/mcp` (configurable), served by **Eclipse Jetty** through the MCP Java SDK's servlet transport (*Proposed*, following the Eclipse-first default in 3.5.1).
-- A hosted server can be added to Claude (web, desktop and mobile) as a custom connector, so colleagues need nothing installed.
-- TLS terminated by the host's ingress or load balancer (*Proposed*), or by the runtime with a configured keystore.
-- Authentication: OAuth 2.1 per the MCP authorization spec, with the server as a resource server validating tokens from the organization's identity provider. Per the decision in requirements 5.0, any authenticated caller can read what the account can read.
-- `Origin` header checks and binding to the configured interface, per the MCP transport security guidance.
+*Scoped 2026-11-25, not yet built.* The goal is a server a data owner can deploy once and colleagues add to Claude (web, desktop and mobile) as a custom connector, with nothing installed and the smallest possible OAuth setup.
+
+#### 5.4.1 Transport
+
+- MCP **streamable HTTP** at `/mcp` (configurable), served by embedded **Eclipse Jetty** through the MCP Java SDK's servlet transport.
+- **Stateless only** (*decided 2026-11-25*): the SDK's stateless servlet transport, with no MCP session and no sticky sessions. Paging cursors and optimistic lock versions already travel in the JSON (4.9), so any instance can serve any call. Server-to-client notifications (4.7) are not offered over HTTP for now.
+- TLS is terminated by the host's ingress or load balancer. The runtime can also serve TLS from a configured keystore, for small deployments without an ingress.
+- Transport security per the MCP guidance: `Origin` validated against `allowedOrigins` (default: none, so browsers cannot call it directly), and the server binds to the configured interface (default `127.0.0.1` when `auth` is not configured, so an unauthenticated server is never reachable from the network).
 - Request limits: max body size, max concurrent calls, and per-caller rate limit (configurable, off by default).
+
+#### 5.4.2 OAuth 2.1 resource server
+
+The server is an OAuth **resource server** as the MCP authorization spec defines it. It never issues tokens, and never handles user passwords or client registration: those belong to the organization's **authorization server** (the identity provider).
+
+- **Protected resource metadata** (RFC 9728) at `/.well-known/oauth-protected-resource`, naming the `publicUrl` as the resource, the configured issuer as its authorization server, and the scopes it understands.
+- **Challenges.** A call with no token, or an invalid one, gets `401` with `WWW-Authenticate: Bearer resource_metadata="<publicUrl>/.well-known/oauth-protected-resource"`, which is how an MCP client discovers where to sign in. A valid token that lacks a needed scope gets `403` with `error="insufficient_scope"`.
+- **Token validation** of JWT access tokens with **Nimbus JOSE+JWT** (*decided 2026-11-25*; no Eclipse project fits): signature against the issuer's keys (JWKS, found through the issuer's discovery document and cached with rotation), `exp` and `nbf` with a small clock skew, `iss` equal to the configured issuer, and **`aud` containing the `publicUrl`** (RFC 8707 resource indicators). The audience check means a token issued for another service is refused here.
+- **No token passthrough.** The token is never forwarded to the database or anywhere else. The server connects with its own account (5.3).
+- **Which authorization servers.** Any standards-compliant OAuth 2.1 / OpenID Connect issuer that publishes discovery metadata and signs JWT access tokens. Keycloak is the tested reference (5.4.5). Opaque tokens (RFC 7662 introspection) are later work.
+
+#### 5.4.3 Identity, database access and writes
+
+- **Reading.** Unchanged from requirements 5.0: one shared database account, and **any authenticated caller can read what that account can read**. An optional `readScope` narrows who may connect at all.
+- **Writing.** A definition with writes (2.7) also needs a **write scope** on the caller's token, by default `<server.name>:write` (for example `order-desk:write`). Configurable as a scope (default) or as a value of another claim, such as a groups or roles claim (*decided 2026-11-25*).
+  - A caller without it does not see the write tools in `tools/list`, and a direct call to one is refused with `403` before the database is touched (SR-3 per caller).
+  - It narrows further, never widens: the definition's `tools.writes` ceiling and the `--writes` switch (3.5.5) still apply, and the database account still enforces its grants.
+- **Audit.** Every audit line (5.5) carries the token's subject (`sub`) and client id (`azp` or `client_id`), never the token.
+- Per-caller row filters, field visibility and multitenancy (requirements 5.1 to 5.6) are the later security model; they will read the same validated claims.
+
+#### 5.4.4 Configuration
+
+The aim is two settings for a working setup: the server's public URL and the issuer.
+
+```yaml
+transport:
+  type: http
+  http:
+    publicUrl: https://mcp.example.com/order-desk   # required for http; the resource and the token audience
+    port: 8080                                       # default 8080
+    path: /mcp                                       # default /mcp
+    allowedOrigins: []                               # default: none
+    auth:
+      issuer: https://login.example.com/realms/acme  # required; JWKS found through discovery
+      # audience: <publicUrl>                        # default: publicUrl
+      # readScope: order-desk:read                   # default: none (any authenticated caller)
+      # writeScope: order-desk:write                 # default: <server.name>:write
+      # writeClaim: scope                            # default scope; or e.g. groups, roles
+```
+
+- Every value accepts `${env:...}` and `${file:...}` references (5.3), so one image serves several environments.
+- Validating JWTs needs no secret: the issuer's keys are public. The only secret stays the database password.
+- `--transport http` and `--port` override the descriptor (3.2). Starting with `type: http` and no `auth` is allowed only on `127.0.0.1`, for local testing with MCP Inspector, and logs a warning.
+
+#### 5.4.5 Minimal OAuth setup
+
+- **Sample, one command.** `samples/hosted` holds a Docker Compose file that starts the `package --as image` server for `order-desk`, PostgreSQL with the sample schema, and **Keycloak** with a realm imported at startup. That realm has dynamic client registration enabled (so Claude and MCP Inspector register themselves), the `order-desk:read` and `order-desk:write` client scopes, and two test users: one who can write, one who can only read. `docker compose up` gives a working OAuth setup with no console steps.
+- **Real identity providers.** A short page each for Entra ID, Okta, Auth0 and Keycloak listing exactly what to create (an API or resource with the server's URL as its identifier, the scopes, and a client for Claude), and the two settings to copy into the descriptor. Providers without dynamic client registration need a client registered by hand for each MCP client; each page says how.
+- **Claude.** Adding the server as a custom connector needs only its `publicUrl`; Claude discovers the issuer from the protected resource metadata (5.4.2).
+
+#### 5.4.6 Testing
+
+- **Unit:** the token filter against tokens signed with an in-test key and served from an in-test JWKS: valid, expired, not yet valid, wrong issuer, wrong audience, bad signature, missing write scope, and key rotation.
+- **Integration:** embedded Jetty with the sample definition, driven by the MCP Java SDK's HTTP client: the `401` challenge and metadata, reads, write tools hidden and refused without the scope, and a `CONFLICT` between two server instances writing the same order.
+- **Keycloak:** an optional Maven profile runs the sample realm with Testcontainers, for CI with Docker.
+- **Manual:** MCP Inspector and a Claude custom connector against the Compose sample, before each release.
 
 ### 5.5 Health, logging and monitoring
 
 - `GET /health/live`: process is up. `GET /health/ready`: definition loaded and a pooled connection validates. (HTTP only; for stdio, `--validate` serves the same purpose.)
-- Logs: structured JSON lines to stderr (stdout is reserved for the stdio transport). Audit lines (SR-12) carry tool, arguments, generated query, row count, duration and outcome; for HTTP also the caller identity.
+- Logs: structured JSON lines to stderr (stdout is reserved for the stdio transport). Audit lines (SR-12) carry tool, arguments, generated query, row count, duration and outcome; for HTTP also the caller's token subject and client id (5.4.3).
 - Metrics (*Proposed*, HTTP only): `/metrics` in Prometheus format with tool call counts, durations, errors, and pool usage; OpenTelemetry tracing as an option.
 
 ### 5.6 Scaling and availability
 
-- The server is stateless apart from the connection pool and EclipseLink cache, so HTTP instances scale horizontally behind a load balancer. Paging cursors are self-contained (encoded query position), so any instance can serve the next page.
+- The server is stateless apart from the connection pool and EclipseLink cache, so HTTP instances scale horizontally behind a load balancer with no sticky sessions (5.4.1). Paging cursors are self-contained (encoded query position), so any instance can serve the next page.
+- **Writable entities are never in the shared cache** (*decided 2026-11-25*). Several instances, or several stdio copies on one desktop (3.4), may write the same rows, and a shared cache in one would serve stale reads after another writes. So every entity whose writes are enabled in `tools.writes`, and every entity locked through one of them (`mcp.lock-through`, such as `OrderLine`), is read from the database on every call. The shared cache is off by default already (`eclipselink.cache.shared.default=false`). When caching is turned on later for read-only entities such as `Product`, the runtime keeps writable entities isolated regardless, and startup fails if the definition asks to cache one. Optimistic locking (4.9) still catches concurrent writes to the same row; this rule removes the stale reads before them.
 - The database is the limit: total connections = instances x `pool.max`. Size the pool to the database's capacity, not the client count.
 - The definition is read at startup; deploying a new definition version means a rolling restart.
 - stdio deployments are one process per client session and need no scaling.
@@ -900,3 +963,4 @@ The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 8. Default naming in `init`: no singularization; the design-time skill proposes renames (7.4). *Proposed.*
 9. Tool name prefixing (e.g. `sales_db.query_entities`) when one client connects to several definitions. *Proposed: no prefix; clients already namespace by server.*
 10. ~~Writes.~~ *Decided (2026-11-23): read-only by default; named write operations in `writes/`, enabled per entity and action in `tools.writes` (an entity that allows update or delete must be optimistically locked; integer versions only for now) (2.7, 4.9). No generic write tools.*
+11. ~~HTTP and OAuth.~~ *Decided (2026-11-25): stateless streamable HTTP on Eclipse Jetty; OAuth 2.1 resource server with JWT validation by Nimbus JOSE+JWT and audience = `publicUrl`; one shared account, any authenticated caller reads; writes need a write scope (or configured claim) per caller; writable entities never shared-cached; Keycloak sample for a minimal OAuth setup (5.4, 5.6).*
