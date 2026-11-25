@@ -268,13 +268,14 @@ Rules checked at startup (6): the root exists; every `set`, `fixed` and `conditi
 
 ### 3.1 Forms
 
-| Form | What it is | Use |
-|---|---|---|
-| **Definition directory + runtime JAR** | `java -jar eclipselink-mcp-server.jar --definition ./sales-db` | Development, POC. *Proposed default.* |
-| **Bundled JAR** | One executable JAR with runtime, definition and JDBC driver, built by `eclipselink-mcp package ./sales-db` | Hand to a user or client config with no other files. |
-| **Container image** | Runtime image with the definition copied or mounted at `/definition` | HTTP deployments (later milestone). |
+| Form | What it is | Needs Java on the machine | Use |
+|---|---|---|---|
+| **Definition directory + runtime JAR** | `java -jar eclipselink-mcp-server.jar --definition ./sales-db` | Yes | Design time, development, CI. |
+| **Bundled JAR** | One executable JAR with runtime, definition and JDBC drivers (`package --as jar`, 3.5) | Yes | A single file for a client config or a server that already has Java. |
+| **Desktop bundle (`.mcpb`)** | An [MCP Bundle](https://github.com/modelcontextprotocol/mcpb) with runtime, definition, drivers and a Java runtime for one platform (`package --as mcpb`, 3.5) | No | Installing in Claude Desktop and other MCPB clients with a double click. |
+| **Container image** | Runtime and definition on an `eclipse-temurin` base image (`package --as image`, 3.5) | No | HTTP hosting (later milestone, 5.2). |
 
-All forms read the same definition format, so a definition moves between them unchanged.
+All forms read the same definition format, so a definition moves between them unchanged. Packaging never changes the model, tools or writes.
 
 ### 3.2 Command line
 
@@ -324,7 +325,104 @@ The client's `env` block keeps the password in clear text in the client's config
 
 Clients may start several copies of one server (Claude Desktop starts extra copies for Cowork and Claude Code sessions), so a definition must tolerate concurrent processes. Client/server databases do. An embedded H2 file database needs `;AUTO_SERVER=TRUE` in its URL; `init` adds it, and the runtime explains a locked file in one line instead of failing with a stack trace.
 
+A desktop bundle (`.mcpb`, 3.5) needs none of this: the client installs it, asks for the connection settings in a form, and writes no JSON by hand.
+
 The generated `README.md` in each definition includes these snippets with the right paths and environment variable names.
+
+### 3.5 Building packages: `package`
+
+*Decided (2026-11-25), not yet built.* This section describes the experience of turning a finished definition into something a data owner hands to colleagues.
+
+#### 3.5.1 Audience and principles
+
+- **Audience: the data owner.** The first user of `package` is the person who built and reviewed a definition (usually with the design-time skill) and now hands a server to colleagues. The colleague installs it and supplies their own connection settings; they never see the definition's files.
+- **No demo mode.** A package always asks for real connection settings. The samples use the same path: an `order-desk` bundle is installed and pointed at the H2 database that the build creates (see the README), rather than shipping a separate demo database.
+- **Eclipse technologies by default.** Where there is a choice, the default is an Eclipse project: Eclipse Temurin for the Java runtime and base image, Eclipse Jetty for the HTTP transport (5.4). Every default can be overridden.
+- **The definition decides what the server can do.** Packaging adds a runtime and install-time settings, never tools, entities or write actions (3.5.5).
+
+#### 3.5.2 Command
+
+```
+eclipselink-mcp-server.jar package
+  --definition <dir>             definition to package (checked offline first)
+  --as jar|mcpb|image            package form (3.1); repeatable
+  --target <os>-<arch>[,...]     platforms for mcpb and image: macos-aarch64, macos-x64,
+                                 windows-x64, linux-x64, linux-aarch64 (required for mcpb)
+  --jdk <target>=<dir>           build that target's runtime with this JDK's jlink (3.5.3)
+  --runtime <target>=<dir>       use this Java runtime image for that target as is (3.5.3)
+  --drivers <dir>                JDBC driver JARs to include (default: as for running, 3.3)
+  --out <dir>                    output directory (default: target/packages)
+  --validate-against <url>       optional: also run the full startup validation (6) against this database
+```
+
+Example: a data owner packages `order-desk` for colleagues on Apple silicon Macs and Windows.
+
+```sh
+java -jar eclipselink-mcp-server.jar package --definition samples/order-desk \
+  --as mcpb --target macos-aarch64,windows-x64
+# target/packages/order-desk-0.1.0-macos-aarch64.mcpb
+# target/packages/order-desk-0.1.0-windows-x64.mcpb
+```
+
+`package` checks the definition's files, model and writes without a database, since the build machine often cannot reach it; `--validate-against` adds the full check. The developer names the target platforms. `package` never guesses them from the build machine, because the people installing a bundle are usually on different machines.
+
+#### 3.5.3 Choosing the Java runtime
+
+A desktop bundle and a container image carry their own Java runtime, so the person installing them needs no Java. A runtime is specific to one OS and CPU, so each target gets its own.
+
+| For each target | Runtime used |
+|---|---|
+| Neither `--jdk` nor `--runtime` given (**default**) | The **Eclipse Temurin JRE 21** for that target, downloaded from the Adoptium API, checked against its published SHA-256 checksum, cached locally (`~/.eclipselink-mcp/runtimes`) and bundled **unchanged**. |
+| `--jdk <target>=<dir>` | Any JDK 21 or later from any vendor. `package` runs that JDK's `jlink` to build a runtime with only the modules the server needs. `jlink` can link for another platform from that platform's JDK, so one machine can build every target. |
+| `--runtime <target>=<dir>` | An existing Java runtime image (for example one a team has already vetted), copied as is. `package` checks that it is Java 21 or later, matches the target and has the modules the server needs. |
+
+- **Java 21 by default**, the version the runtime is built and tested on. A newer runtime is the builder's choice through `--jdk` or `--runtime`.
+- **The default is not trimmed** with `jlink`, so a bundle's runtime is byte-for-byte a published Temurin release and easy to trace. Trimming the default may come later.
+- OpenJDK's own builds (jdk.java.net) are JDKs only and are removed when the next release ships, so Temurin is the default OpenJDK build.
+- **Recorded in the package:** runtime vendor, version, target and checksum go into the package metadata (3.5.6), so it is clear what shipped.
+- **Licensing is the builder's responsibility.** Redistributing a Java runtime falls under its vendor's terms. Temurin is GPLv2 with the Classpath Exception; other vendors differ. `package` records what was bundled but enforces nothing.
+- **Not supported:** GraalVM native images. The runtime is always a standard Java runtime.
+
+The bundled JAR (`--as jar`) carries no Java runtime and uses whatever Java 21 or later is on the machine.
+
+#### 3.5.4 Connection settings and credentials at install
+
+A package carries no secrets (5.3). The settings the definition refers to with `${env:...}` become install-time settings:
+
+- **Desktop bundle:** each `${env:NAME}` reference in `connection` becomes a `user_config` field in the bundle's manifest, which the client shows as a form at install. A reference in `password`, or any `${file:...}` secret, becomes a field marked `sensitive`, which the client keeps in the operating system's credential store instead of in a config file. A `${env:NAME:-default}` reference supplies the field's default. This removes the clear-text password that a hand-written `env` block leaves in the client config (3.4), without the `keychain` resolver.
+- **Container image:** settings stay `${env:...}` and `${file:...}` references, supplied by the orchestrator as environment variables or mounted secrets (5.3).
+- **Bundled JAR:** as for the runtime JAR (3.4).
+
+For example, `samples/order-desk` produces a form with *Database URL* (`SALES_DB_URL`), *Database user* (`ORDER_DESK_DB_USER`, default `MCP_ORDER_DESK`) and *Database password* (`ORDER_DESK_DB_PASSWORD`, sensitive). Field labels come from the variable name. *Proposed later:* optional labels and descriptions for each setting in the descriptor.
+
+#### 3.5.5 Writes in a package
+
+A package is read-only unless its definition enables writes (`tools.writes`, 2.7), and even then the person installing it chooses whether to use them:
+
+- **The definition's `tools.writes` is a ceiling.** A package can expose those writes or fewer, never more. Nothing at install or run time can add an entity or an action.
+- **Desktop bundles ask, defaulting to off.** A bundle whose definition has writes adds an *Allow changes* setting (`user_config`, boolean, default `false`) that lists the write tools in its description. Off, the server starts read-only and the write tools are not registered.
+- **Runtime option** `--writes none|definition` (default `definition` when run directly, `none` in a bundle until the setting is turned on). *Proposed later:* a subset form (`--writes Order:update`), checked against the definition at startup; anything outside the definition fails startup.
+- **The database account is still the enforcement.** The install-time setting narrows what the agent is offered; the account the colleague connects with decides what the database allows (requirements 5.0). A read-only colleague should be given a read-only account.
+
+#### 3.5.6 What is in a package
+
+Every form holds the same pieces, laid out for its format:
+
+```
+order-desk-0.1.0-macos-aarch64.mcpb     # a zip
+├── manifest.json        # MCPB manifest: name, version, description from server.*, tools list,
+│                        #   user_config (3.5.4, 3.5.5), and mcp_config launching the bundled runtime
+├── runtime/             # Java runtime for the target (3.5.3); absent in --as jar
+├── server/
+│   └── eclipselink-mcp-server.jar
+├── definition/          # the validated definition, unchanged; drivers/ included
+└── package.json         # package metadata: definition name and version, runtime version,
+                         #   Java runtime vendor, version, target and checksum, build time
+```
+
+- The bundle's tool list is the definition's read tools, plus its write tools marked as needing *Allow changes*, so the client can show them before install.
+- The bundle's version is the definition's `server.version`. A new definition version means a new package.
+- The container image uses the same `server/` and `definition/` layout under `/opt/eclipselink-mcp`, on an `eclipse-temurin` base image for the target, with `transport` set to `http` (5.4).
 
 ## 4. MCP surface
 
@@ -574,8 +672,8 @@ What a host needs to run one deployment.
 
 | Need | Detail |
 |---|---|
-| JVM | Java 21 or later (JRE is enough). *Proposed:* no other runtime dependencies. |
-| Runtime | `eclipselink-mcp-server.jar` (or a bundled JAR / container image, 3.1). |
+| JVM | Java 21 or later (JRE is enough), unless the package carries its own (3.5.3). *Proposed:* no other runtime dependencies. |
+| Runtime | `eclipselink-mcp-server.jar` (or a bundled JAR, desktop bundle or container image, 3.1). |
 | Definition | The definition directory or zip, read-only to the process. |
 | JDBC driver | H2 is bundled; any other driver JAR goes in the definition's `drivers/` folder or a directory given by `--drivers` (3.3). |
 | Database access | Network route from the host to the database; the shared account (requirements 5.0) with read grants on the mapped tables only. |
@@ -587,8 +685,9 @@ What a host needs to run one deployment.
 
 | Option | Transport | How the client reaches it | Fits |
 |---|---|---|---|
-| **Local process** | stdio | The MCP client launches `java -jar ...` (3.4); one process per client session | POC, desktop users, DB reachable from the laptop |
-| **Container** | HTTP | `docker run -e SALES_DB_PASSWORD=... -v ./sales-db:/definition:ro -p 8080:8080 eclipselink-mcp` | Shared team server, later milestone |
+| **Local process** | stdio | The MCP client launches `java -jar ...` (3.4); one process per client session | POC, development, DB reachable from the laptop |
+| **Desktop bundle** | stdio | Installed from a `.mcpb` (3.5); the client launches its bundled runtime | Colleagues of a data owner, DB reachable from the laptop |
+| **Container** | HTTP | `docker run -e SALES_DB_PASSWORD=... -p 8080:8080 order-desk:0.1.0` (image from `package --as image`), or the generic image with the definition mounted at `/definition` | Shared team server, later milestone |
 | **Kubernetes / cloud container service** | HTTP | Deployment + Service + Ingress; secrets from a Secret or cloud secret manager | Production, several definitions side by side |
 
 Each definition is its own process or pod, covering one database and one mapped model (requirements 2). Several definitions are hosted by running several instances, not by loading them into one process; this keeps one account per trust boundary. Hosting several definitions in one runtime is future work (requirements 4.6).
@@ -632,7 +731,8 @@ A resolver implements `SecretResolver` (`scheme()`, `resolve(reference, definiti
 
 ### 5.4 HTTP endpoint (later milestone)
 
-- MCP streamable HTTP transport at `/mcp` (configurable).
+- MCP streamable HTTP transport at `/mcp` (configurable), served by **Eclipse Jetty** through the MCP Java SDK's servlet transport (*Proposed*, following the Eclipse-first default in 3.5.1).
+- A hosted server can be added to Claude (web, desktop and mobile) as a custom connector, so colleagues need nothing installed.
 - TLS terminated by the host's ingress or load balancer (*Proposed*), or by the runtime with a configured keystore.
 - Authentication: OAuth 2.1 per the MCP authorization spec, with the server as a resource server validating tokens from the organization's identity provider. Per the decision in requirements 5.0, any authenticated caller can read what the account can read.
 - `Origin` header checks and binding to the configured interface, per the MCP transport security guidance.
@@ -794,7 +894,7 @@ The skill itself is in `skills/configure-server-from-schema/SKILL.md`.
 1. Descriptor format: YAML (proposed) or JSON.
 2. Report and prompt formats: YAML and Markdown files (proposed) or embedded in the descriptor.
 3. ~~Which JDBC drivers ship with the runtime.~~ *Decided: H2 only; others from a drivers directory (3.3).*
-4. Whether the bundled JAR (`package` command) is in the POC or follows it. *Proposed: follows.*
+4. ~~Whether the bundled JAR (`package` command) is in the POC or follows it.~~ *Decided (2026-11-25): follows the POC. `package` builds a bundled JAR, a desktop bundle (`.mcpb`) or a container image; the audience is the data owner; the default Java runtime is the unmodified Eclipse Temurin JRE 21 per named target, overridable with `--jdk` or `--runtime`; no GraalVM; the definition's writes are a ceiling that install-time settings can only narrow, off by default in a bundle (3.5).*
 6. Per-use-case JSON shapes: object graphs over shared bindings by default, separate binding sets opt-in (4.8). *Proposed.*
 7. Secret resolver plugins: a `plugins/` folder like `drivers/` (5.3). *Proposed.*
 8. Default naming in `init`: no singularization; the design-time skill proposes renames (7.4). *Proposed.*

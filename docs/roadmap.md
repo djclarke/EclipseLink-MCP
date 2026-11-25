@@ -19,6 +19,18 @@ Done in the POC: `${env:...}` and `${file:...}` references, the `SecretResolver`
 | C9 | Oracle Wallet | Docs | The driver reads a wallet from the JDBC URL (`TNS_ADMIN`). Document it, and add a sample. |
 | C10 | Warn at startup when a `file` secret can be read by other users | Next | POSIX permissions check. |
 
+## Packaging (spec: [server-definition 3.5](server-definition.md#35-building-packages-package))
+
+| # | Item | Milestone | Notes |
+|---|---|---|---|
+| P1 | `package --as jar`: bundled JAR with runtime, definition and drivers | Packaging | No Java runtime included. |
+| P2 | `package --as mcpb --target ...`: desktop bundle per platform, default Eclipse Temurin JRE 21 unchanged | Packaging | Connection settings as `user_config`; passwords `sensitive`. |
+| P3 | `--jdk <target>=<dir>` (jlink) and `--runtime <target>=<dir>` overrides | Packaging | Any vendor, Java 21 or later. No GraalVM. |
+| P4 | `--writes none\|definition` and the bundle's *Allow changes* setting, default off | Packaging | Narrows the definition's writes, never widens them. |
+| P5 | `package --as image` on an `eclipse-temurin` base image | HTTP milestone | With the HTTP transport on Eclipse Jetty (5.4). |
+| P6 | Subset form of `--writes` (`Order:update`) | Later | Checked against the definition at startup. |
+| P7 | Trim the default runtime with `jlink` | Later | Roughly halves bundle size. |
+
 ## Other later milestones
 
 See [requirements 4.6](requirements.md#46-later-milestones): writes beyond named write operations, multi-definition hosting, composite persistence units, HTTP transport, change notifications, and the security model (section 5). See [server-definition 4.8](server-definition.md#48-loading-related-data-and-json-shapes) for MOXy rendering of named query graphs, plus opt-in per-query binding sets.
