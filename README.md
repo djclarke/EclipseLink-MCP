@@ -1,6 +1,7 @@
 # EclipseLink MCP
 
-[![Watch the 2:33 walkthrough: from an existing database to an MCP server, no code](docs/media/walkthrough-poster.jpg)](https://github.com/user-attachments/assets/c88e6dbe-8832-4fbe-9545-ed432ea65f16)
+<!-- Replace VIDEO_URL with the https://github.com/user-attachments/assets/... link GitHub inserts when you drag eclipselink-mcp-intro-v2.mp4 into this file in the web editor, then delete this comment. On its own line the link renders as a player that shows the title slide until played. -->
+VIDEO_URL
 
 A factory for [MCP](https://modelcontextprotocol.io) servers built on EclipseLink, letting AI agents work with an existing relational database through a mapped object model rather than raw SQL.
 
