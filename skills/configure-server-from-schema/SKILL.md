@@ -159,7 +159,7 @@ Then decide the operations in `writes/`:
 - **create** is usually one `create_<entity>` operation over the attributes a new row needs.
 - **update** is usually one `update_<entity>` operation listing every attribute agents may change, all optional, so a call changes only what it passes. Leave out the key and the version (they identify the row and cannot be set), to-many relationships, values copied as snapshots, and attributes that should change only through a state change.
 - **State changes** always carry a `condition` on the current state, so an agent cannot, for example, ship a cancelled order. Use a status-only update (`update_order` with `status` allowed SHIPPED or CANCELLED, only while OPEN) or one operation per transition (`ship_order`) when transitions need different inputs. Leave those attributes out of a general `update_<entity>`.
-- **A parent with its children** (an order and its lines) can be created in one call with `items`, so the agent never sees a half-built order. Ask whether the children may change afterwards; if not, do not enable writes on the child entity at all.
+- **A parent with its children** (an order and its lines) can be created in one call with `items`, so the agent never sees a half-built order. Ask whether the children may change afterwards; if not, do not enable writes on the child entity at all. If children may only be added to an open parent (a line added to an open order), enable only `create` on the child, lock it through the parent, and use `recompute` to keep the parent's totals right (`order.total: [quantity, price]`).
 - **delete**, if allowed, is one `delete_<entity>` operation, usually with a `condition`.
 
 **b. Which lock?** Every update and delete is checked with optimistic locking (spec 4.9). The server keeps no state between calls: the version goes out in every JSON item, comes back in the write call, and the write returns the new one. A create-only entity needs no lock, because a new row cannot conflict with a stale read. Find the lock with the user:
@@ -248,7 +248,7 @@ java -jar $JAR call --definition defs/sales find_entity '{"entity":"Order","id":
 java -jar $JAR call --definition defs/sales ship_order '{"id":1002,"version":1,"shippedAt":"2026-11-23T10:30:00-05:00"}'
 ```
 
-The result has `"dryRun": true` and nothing is written. Also show a stale version (`"version": 0`) so the user sees the `CONFLICT` an agent gets, and a row that fails the condition (`PRECONDITION_FAILED`). A `PERMISSION_DENIED` means the account lacks a grant.
+The result has `"dryRun": true` and nothing is written. Also show a stale version (`"version": 0`) so the user sees the `CONFLICT` an agent gets (its `details.refresh` is the read to make before deciding whether the change is a duplicate, a conflict, or still applies), and a row that fails the condition (`PRECONDITION_FAILED`). A `PERMISSION_DENIED` means the account lacks a grant.
 
 **e. Enable the entity's actions.** Only when the user confirms, add the entity with exactly the actions agreed in step a:
 

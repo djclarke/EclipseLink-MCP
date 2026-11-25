@@ -164,7 +164,9 @@ public final class McpServerFactory {
         if (!writes.isEmpty()) {
             sb.append("Write tools: ").append(String.join(", ", writes)).append(". They change data, one entity per "
                     + "call. Items you read include a version; send back the version you read. On CONFLICT the data "
-                    + "changed since you read it: read it again and retry only if the change still makes sense. Each "
+                    + "changed since you read it and nothing was written: read it again (details.refresh names the "
+                    + "call), compare it with the change you meant, tell the user what is different, and retry only "
+                    + "if the change still applies to the new state, asking the user when unsure. Each "
                     + "write returns the new version, so you can make a follow-up change without reading again.\n");
         }
         sb.append("Use list_entities and describe_entity to learn the model, query_entities with a structured "

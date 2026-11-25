@@ -8,8 +8,7 @@ Server definitions over the same sample H2 database, a before and after of the
 |---|---|
 | [sales-db-generated](sales-db-generated) | The raw `init` output for every table, untouched. What you get first. |
 | [sales-db](sales-db) | The shaped definition: the model simplified and described, plus named reports and a named query. Read-only. |
-| [order-desk](order-desk) | The same model with writes enabled for orders and customers (`Order: [create, update]`, `Customer: [create, update]` under `tools.writes`), for an order desk agent: create an order with its lines, change its status, create and update customers. It connects as its own account, which may change only what its operations change. |
-| [sales-customer](sales-customer) | Fresh `init` output with writes enabled for `Customer` only (`tools.writes: {Customer: [create, update]}`): `create_customer` and `update_customer`, locked by the `VERSION` column `init` mapped. |
+| [order-desk](order-desk) | The same model with writes enabled for orders, order lines and customers (`Order: [create, update]`, `OrderLine: [create]`, `Customer: [create, update]` under `tools.writes`), for an order desk agent: create an order with its lines, add lines to an open order, change its status, create and update customers. It connects as its own account, which may change only what its operations change. |
 
 ## sales-db-generated
 
@@ -51,14 +50,15 @@ added under `reports/` and `queries/`. The tests run against this definition.
 ## order-desk
 
 A second server over the same database, for a different trust boundary: it can create orders with their
-lines, ship or cancel open orders, and create customers or change their details. Lines cannot be changed once
-an order is placed, and products are read-only. Each operation is one file in `writes/` (spec 2.7). Writes
+lines, add lines to open orders, ship or cancel open orders, and create customers or change their details.
+Existing lines cannot be changed or removed, and products are read-only. Each operation is one file in `writes/` (spec 2.7). Writes
 are enabled per entity and action:
 
 ```yaml
 tools:
   writes:
     Order: [create, update]
+    OrderLine: [create]
     Customer: [create, update]
 ```
 
@@ -70,10 +70,33 @@ does not change existing orders, and the order's `total` is the sum of quantity 
 `update_order` changes only the status of an OPEN order, to SHIPPED (with `shippedAt`) or CANCELLED. Every
 update uses optimistic locking (spec 4.9): the caller sends back the `version` it read.
 
-The OrderLine operations in `writes/` (`add_order_line`, `change_line_quantity`, `remove_order_line`) stay
-hidden because `OrderLine` is not listed. They are kept as examples of locking through a parent: a line has no
-version of its own, so each one checks and increments its order's version. `reprice_product` stays hidden
-for the same reason.
+`add_order_line` adds one line to an OPEN order. A line has no version of its own: it is locked through its
+order, so the caller passes the order's version as `orderVersion`, and the call checks and increments it. Two
+people adding lines to the same order at once cannot both succeed: the second gets `CONFLICT`, reads the
+order and all its lines again (the error's `details.refresh`), and decides whether its line is a duplicate of
+one just added, conflicts with the new state, or still applies. The line copies the product's price and name,
+and the order's `total` is recomputed over all of its lines (`recompute:`).
+
+**Demo: adding a line while someone ships the order.** Users A and B both read open order 1002 at version 1.
+B ships it (`update_order`, version 1 to 2). A then adds a line with `orderVersion` 1 and gets `CONFLICT`. Because
+the order no longer meets `add_order_line`'s condition (`order.status` is OPEN), the error says so
+(`details.conditionHolds: false`): it is a logical conflict, so A's agent must not retry, and tells A that
+the order shipped without the line. `details.refresh` shows the shipped order and its lines. Retrying with
+version 2 would only get `PRECONDITION_FAILED`. A racing add cannot land on a shipped order either: the add
+updates the order's version with `WHERE VERSION = 1`, so whichever of the two commits second matches no row
+and gets `CONFLICT`.
+
+```sh
+java -jar $JAR call --definition samples/order-desk --commit update_order \
+  '{"id":1002,"version":1,"status":"SHIPPED","shippedAt":"2026-11-25T10:00:00Z"}'   # B ships
+java -jar $JAR call --definition samples/order-desk add_order_line \
+  '{"order":1002,"orderVersion":1,"product":1,"quantity":3}'                         # A: CONFLICT, do not retry
+```
+
+(This one commits; `mvn -Psample-db process-test-resources` resets the database.)
+
+`change_line_quantity` and `remove_order_line` stay hidden: `OrderLine` allows only `create`, so existing
+lines are immutable. `reprice_product` stays hidden because `Product` is not listed.
 
 It connects as `MCP_ORDER_DESK` (password `orderdesk` in the sample), which may read every table and change
 only `CUSTOMER` and `ORDERS` (insert, update), `PRODUCT` (update) and `ORDER_LINE` (insert, update, delete).
@@ -85,36 +108,15 @@ java -jar $JAR call --definition samples/order-desk create_order \
   '{"customer":1,"lines":[{"product":1,"quantity":2},{"product":2,"quantity":1}]}'  # dry run: rolled back
 java -jar $JAR call --definition samples/order-desk update_order \
   '{"id":1002,"version":1,"status":"SHIPPED","shippedAt":"2026-11-23T10:30:00-05:00"}'
+java -jar $JAR call --definition samples/order-desk add_order_line \
+  '{"order":1002,"orderVersion":1,"product":1,"quantity":3}'                  # total recomputed over its lines
+java -jar $JAR call --definition samples/order-desk add_order_line \
+  '{"order":1002,"orderVersion":0,"product":1,"quantity":3}'                  # CONFLICT, with details.refresh
+java -jar $JAR call --definition samples/order-desk update_customer \
+  '{"id":3,"version":1,"email":"ap@initech.example"}'                      # changes only the fields passed
+java -jar $JAR call --definition samples/order-desk create_customer \
+  '{"name":"Stark Industries","region":"EAST","email":"orders@stark.example"}'  # id 100, version 1
 java -jar $JAR call --definition samples/order-desk --commit update_order '...'      # really writes
-```
-
-## sales-customer
-
-The smallest write setup, made with the [configure-server-from-schema](../skills/configure-server-from-schema/SKILL.md)
-skill: `init` for every table, two `describe` edits, two files in `writes/`, and `Customer: [create, update]` under `tools.writes`.
-`init` maps each `VERSION` column as an optimistic lock, so no locking edit was needed.
-
-```sh
-export SALES_DB_PASSWORD=reader
-java -jar $JAR init --url 'jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' \
-  --user MCP_READER --password-env SALES_DB_PASSWORD --name sales-customer --include '*' --out samples/sales-customer
-java -jar $JAR edit --definition samples/sales-customer describe Customer "A customer account"
-java -jar $JAR edit --definition samples/sales-customer describe Customer.email "Contact email address, or null when unknown"
-```
-
-It connects as `MCP_ORDER_DESK`, which may insert and update `CUSTOMER`. A new customer's id comes from the
-identity column and its version starts at 1. An agent reads a customer, then sends its `version`
-back; a stale version gets `CONFLICT`:
-
-```sh
-export SALES_DB_URL='jdbc:h2:file:./target/test-db/sales;AUTO_SERVER=TRUE' ORDER_DESK_DB_PASSWORD=orderdesk
-java -jar $JAR call --definition samples/sales-customer find_entity '{"entity":"Customer","id":3}'
-java -jar $JAR call --definition samples/sales-customer update_customer \
-  '{"id":3,"version":1,"email":"ap@initech.example"}'                      # dry run: rolled back
-java -jar $JAR call --definition samples/sales-customer update_customer \
-  '{"id":3,"version":0,"email":"ap@initech.example"}'                      # CONFLICT
-java -jar $JAR call --definition samples/sales-customer create_customer \
-  '{"name":"Stark Industries","region":"EAST","email":"orders@stark.example"}'  # dry run: id 100, version 1
 ```
 
 A Desktop server running a sample from `target/eclipselink-mcp-server-*.jar` breaks when `mvn package` replaces
