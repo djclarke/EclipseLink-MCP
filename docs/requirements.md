@@ -171,6 +171,20 @@ Decided (2026-11-23): **a server is read-only by default.** Writes are enabled o
 
 The file format and tool behavior are in server-definition 2.7, 4.3 and 4.9.
 
+### 4.11 Entity kinds and multitenancy
+
+Proposed (2026-11-25, from Doug's direction): the design-time skill classifies every entity by who changes it, and by whether its rows belong to a tenant. Both decide what the runtime may cache.
+
+- FR-55: Three entity kinds. **Reference** entities do not change while the server runs (or only by release); they are read-only to agents and use EclipseLink's shared cache, optionally with a time to live. **External** entities are changed by other applications or back-end systems but never through MCP; they are read-only to agents and read from the database on every call. **Writable** entities are changed by the server's write operations (4.10); they are never in the shared cache (server-definition 5.6).
+- FR-56: Safe default. An entity the user has not classified is external, so caching is only ever turned on by an explicit choice. Only writable entities can be listed in `tools.writes`.
+- FR-57: Cache integrity. A reference entity refers only to other reference entities, and is never multitenant, so nothing in the shared cache can be stale or belong to one tenant.
+- FR-58: Per-entity multitenancy. The skill asks for each entity whether its rows belong to a tenant, and if so which mechanism: a tenant column in a shared table (EclipseLink `SINGLE_TABLE`) or a table per tenant by schema, prefix or suffix (`TABLE_PER_TENANT`). Oracle VPD is not offered for now. Entities without multitenancy are shared across tenants.
+- FR-59: Shared reference data. Tenant entities may refer to shared entities (an order line to a product, a customer to a country). Shared entities may not refer to tenant entities. In a multitenant definition, shared entities are read-only to agents (*proposed*), since a change would reach every tenant.
+- FR-60: Invisible tenant. The tenant is never an attribute, JSON field or tool input. Every query (relationship loads and reports included) and every write is scoped to the call's tenant by EclipseLink.
+- FR-61: Tenant source. A stdio deployment serves one tenant, set in the descriptor (usually from the environment). An HTTP deployment reads the tenant from a claim in each caller's validated token (5.1, SR-2), and refuses tokens without it.
+
+The formats and rules are in server-definition 2.8 and 2.9.
+
 ## 5. Security requirements
 
 Access control must not depend on the model behaving. The agent should never receive data the caller is not allowed to see.
@@ -204,7 +218,7 @@ Consequences:
 
 - SR-4: Entities are visible per role (allow-list).
 - SR-5: Row filters per entity per role, applied to every query including relationship traversal, using `@AdditionalCriteria`-style expressions bound to per-request EntityManager properties (e.g. `this.region = :region`).
-- SR-6: Support EclipseLink multitenancy (`@Multitenant` single-table / table-per-tenant) for tenant isolation.
+- SR-6: Support EclipseLink multitenancy (`@Multitenant` single-table / table-per-tenant) for tenant isolation, per entity, with shared reference entities alongside (4.11, server-definition 2.9).
 - SR-7: Optional push-down to the database (Oracle VPD or equivalent) where available.
 
 ### 5.4 Which fields
@@ -214,7 +228,7 @@ Consequences:
 
 ### 5.5 Request handling
 
-- SR-10: Each MCP request gets its own EntityManager created with the caller's properties. No shared EntityManager across callers. Shared cache use must respect row filters (isolated or partitioned cache where needed).
+- SR-10: Each MCP request gets its own EntityManager created with the caller's properties. No shared EntityManager across callers. Shared cache use must respect row filters (isolated or partitioned cache where needed). Only reference entities, which are never multitenant, use the shared cache (4.11).
 - SR-11: Policy is declarative (one file, per entity and role), validated at startup, and fails closed on errors.
 - SR-12: Audit log for every tool call: caller, roles, tool, arguments, generated query, row count, duration, outcome.
 - SR-13: Database credentials are never exposed to the agent; the server connects with a least-privilege database account that, in milestone 1, matches the MCP client's permissions (5.0).
@@ -254,5 +268,6 @@ claims:
 - Large results: mitigated by paging, projections and hard limits.
 - Messy schemas (no FKs, odd naming): mitigated by the override file and descriptions.
 - Filter bypass through JPQL or native queries: mitigated by keeping JPQL optional and validated, and never exposing native SQL.
-- Cache leakage across callers: needs deliberate cache configuration (see SR-10).
+- Cache leakage across callers: needs deliberate cache configuration (see SR-10). Entity kinds (4.11) keep everything but shared, non-tenant reference data out of the shared cache.
+- Stale reads of data that back-end systems change: mitigated by the external kind (4.11), the default, which always reads from the database.
 - Competition from generic SQL MCP servers: the value has to show in safety and grounding.

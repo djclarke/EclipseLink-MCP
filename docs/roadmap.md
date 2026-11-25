@@ -44,6 +44,17 @@ Phases in order; sizes are rough working days.
 | H5 | Claude custom connector end to end; setup pages for Entra ID, Okta, Auth0, Keycloak | about 2 | Longer if a provider needs workarounds. |
 | H6 | Later: opaque tokens (introspection), metrics, per-caller row filters and multitenancy (security model) | | |
 
+## Entity kinds and multitenancy (spec: [server-definition 2.8](server-definition.md#28-entity-kinds-reference-external-and-writable) and [2.9](server-definition.md#29-multitenancy))
+
+| # | Item | Milestone | Notes |
+|---|---|---|---|
+| K1 | `mcp.kind` and `edit set-kind`; the runtime maps kinds to EclipseLink read-only and cache settings; `describe_entity` reports the kind | Next | Default `external` keeps today's behavior. |
+| K2 | Startup and `edit` rules: `tools.writes` only on writable entities; reference entities refer only to reference entities; `copy` reads its source from the database | Next | |
+| K3 | `edit multitenant` (single table, table per tenant) and descriptor `tenancy.tenant` for stdio, with the relationship rules | After K1 | Sample: a tenant column added to the order desk, with PRODUCT shared. Tests prove one tenant never sees, or writes, another's rows. |
+| K4 | `tenancy.claim` from the validated token | With H2 (OAuth) | Needs the OAuth resource server. |
+| K5 | Desktop bundle asks for the tenant (`user_config`) | With P2 | |
+| K6 | Skill step: classify each entity's kind and tenancy | With K1 | Written in this spec change; commands land with K1 and K3. |
+
 ## Other later milestones
 
 See [requirements 4.6](requirements.md#46-later-milestones): writes beyond named write operations, multi-definition hosting, composite persistence units, HTTP transport, change notifications, and the security model (section 5). See [server-definition 4.8](server-definition.md#48-loading-related-data-and-json-shapes) for MOXy rendering of named query graphs, plus opt-in per-query binding sets.
