@@ -61,10 +61,33 @@ public final class NamedWrite {
 
     public enum Action { CREATE, UPDATE, DELETE }
 
-    /** An attribute the caller supplies, or the server sets. */
-    private record Field(DatabaseMapping mapping, boolean required, List<Object> allowed, String description) {
+    /**
+     * An attribute the caller supplies.
+     *
+     * @param min smallest value allowed: a converted literal, or an {@link AttributePath} read from the entity
+     *            when the write is made; null for none
+     * @param max largest value allowed, in the same forms; null for none
+     */
+    private record Field(DatabaseMapping mapping, boolean required, List<Object> allowed, String description,
+                         Object min, Object max) {
         boolean isRelationship() {
             return !mapping.isDirectToFieldMapping();
+        }
+
+        /** The bounds as the tool description and schema state them, or null when there are none. */
+        String bounds() {
+            List<String> b = new ArrayList<>();
+            if (min != null) {
+                b.add("at least " + boundText(min));
+            }
+            if (max != null) {
+                b.add("at most " + boundText(max));
+            }
+            return b.isEmpty() ? null : String.join(" and ", b);
+        }
+
+        private static String boundText(Object bound) {
+            return bound instanceof AttributePath p ? p.text() : String.valueOf(EntityJson.value(bound));
         }
     }
 
@@ -107,18 +130,57 @@ public final class NamedWrite {
                 entity.set(m.getAttributeName(), v instanceof Clock c ? c.value(Mappings.attributeType(m))
                         : m.isDirectToFieldMapping() ? v : resolve(em, m, v, null, m.getAttributeName()));
             }
-            // Snapshots: copied when the relationship is set (always on create), never refreshed afterwards.
+            // Snapshots: copied when the relationship is set (always on create), never refreshed afterwards. A
+            // copy target that is also a set attribute is a default: the caller's value wins.
             for (Map.Entry<DatabaseMapping, AttributePath> e : copy.entrySet()) {
                 DatabaseMapping via = e.getValue().mappings().get(0);
+                String target = e.getKey().getAttributeName();
+                if (set.containsKey(target) && args.get(target) != null) {
+                    continue;
+                }
                 if (action != Action.CREATE && !args.containsKey(via.getAttributeName()) && !fixed.containsKey(via)) {
                     continue;
                 }
-                Object value = entity;
-                for (DatabaseMapping m : e.getValue().mappings()) {
-                    value = value == null ? null : ((DynamicEntity) value).get(m.getAttributeName());
-                }
-                entity.set(e.getKey().getAttributeName(), value);
+                entity.set(target, read(entity, e.getValue()));
             }
+            // Bounds, once every value is in place, so a bound read through a relationship sees the new target.
+            for (Map.Entry<String, Field> e : set.entrySet()) {
+                Field f = e.getValue();
+                if (args.get(e.getKey()) == null || (f.min() == null && f.max() == null)) {
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                Comparable<Object> value = (Comparable<Object>) entity.get(e.getKey());
+                checkBound(e.getKey(), value, f.min(), entity, true);
+                checkBound(e.getKey(), value, f.max(), entity, false);
+            }
+        }
+
+        private static void checkBound(String name, Comparable<Object> value, Object bound, DynamicEntity entity,
+                                       boolean lower) {
+            if (bound == null) {
+                return;
+            }
+            Object limit = bound instanceof AttributePath p ? read(entity, p) : bound;
+            if (limit == null) {
+                return;
+            }
+            int c = value.compareTo(limit);
+            if (lower ? c < 0 : c > 0) {
+                String source = bound instanceof AttributePath p ? p.text() + ", " : "";
+                throw new ToolException(Code.INVALID_PARAMETER, "'" + name + "' is " + EntityJson.value(value)
+                        + ", " + (lower ? "below" : "above") + " its " + (lower ? "minimum" : "maximum") + " ("
+                        + source + EntityJson.value(limit) + "). Nothing was changed.");
+            }
+        }
+
+        /** Follows a path of to-one relationships from the entity to a basic attribute; null if a step is null. */
+        private static Object read(DynamicEntity entity, AttributePath path) {
+            Object value = entity;
+            for (DatabaseMapping m : path.mappings()) {
+                value = value == null ? null : ((DynamicEntity) value).get(m.getAttributeName());
+            }
+            return value;
         }
 
         /** Checks a caller's arguments for this part: no unknown names, required ones present. */
@@ -139,11 +201,17 @@ public final class NamedWrite {
         }
 
         void describe(StringBuilder sb) {
-            if (!copy.isEmpty()) {
-                List<String> c = new ArrayList<>();
-                copy.forEach((m, p) -> c.add(m.getAttributeName() + " from " + p.text()));
-                sb.append(" Copies ").append(String.join(", ", c)).append(" when the write is made, so they do not "
+            List<String> copies = new ArrayList<>();
+            List<String> defaults = new ArrayList<>();
+            copy.forEach((m, p) -> (set.containsKey(m.getAttributeName()) ? defaults : copies)
+                    .add(m.getAttributeName() + " from " + p.text()));
+            if (!copies.isEmpty()) {
+                sb.append(" Copies ").append(String.join(", ", copies)).append(" when the write is made, so they do not "
                         + "change later.");
+            }
+            if (!defaults.isEmpty()) {
+                sb.append(" Unless given, copies ").append(String.join(", ", defaults))
+                        .append(" when the write is made.");
             }
             if (!fixed.isEmpty()) {
                 List<String> f = new ArrayList<>();
@@ -156,7 +224,12 @@ public final class NamedWrite {
         void schema(Map<String, Object> props, List<String> required) {
             for (Map.Entry<String, Field> e : set.entrySet()) {
                 Field f = e.getValue();
-                props.put(e.getKey(), schemaOf(f.mapping(), f.allowed(), f.description()));
+                Map<String, Object> s = schemaOf(f.mapping(), f.allowed(), f.description());
+                if (f.bounds() != null) {
+                    Object d = s.get("description");
+                    s.put("description", (d == null ? "" : d + ". ") + "Must be " + f.bounds());
+                }
+                props.put(e.getKey(), s);
                 if (f.required()) {
                     required.add(e.getKey());
                 }
@@ -273,8 +346,8 @@ public final class NamedWrite {
                                     Action action, String where) {
         Map<String, Field> set = new LinkedHashMap<>();
         for (Map.Entry<String, WriteDefinition.Field> e : defSet.entrySet()) {
-            WriteDefinition.Field f = e.getValue() == null ? new WriteDefinition.Field(null, null, null)
-                    : e.getValue();
+            WriteDefinition.Field f = e.getValue() == null
+                    ? new WriteDefinition.Field(null, null, null, null, null) : e.getValue();
             DatabaseMapping m = settable(d, e.getKey(), lock, action, where);
             List<Object> allowed = null;
             if (f.allowed() != null) {
@@ -287,7 +360,7 @@ public final class NamedWrite {
                     allowed.add(Mappings.convert(v, Mappings.attributeType(m), e.getKey()));
                 }
             }
-            set.put(e.getKey(), new Field(m, f.required(), allowed, f.description()));
+            set.put(e.getKey(), new Field(m, f.required(), allowed, f.description(), null, null));
         }
         Map<DatabaseMapping, Object> fixed = new LinkedHashMap<>();
         for (Map.Entry<String, Object> e : defFixed.entrySet()) {
@@ -297,31 +370,76 @@ public final class NamedWrite {
             DatabaseMapping m = settable(d, e.getKey(), lock, action, where);
             fixed.put(m, fixedValue(m, e.getKey(), e.getValue(), where));
         }
+        // Bounds, now that the relationships a path bound reads through are known.
+        for (Map.Entry<String, WriteDefinition.Field> e : defSet.entrySet()) {
+            WriteDefinition.Field f = e.getValue();
+            if (f == null || (f.min() == null && f.max() == null)) {
+                continue;
+            }
+            Field field = set.get(e.getKey());
+            DatabaseMapping m = field.mapping();
+            if (!m.isDirectToFieldMapping() || !Comparable.class.isAssignableFrom(wrapper(Mappings.attributeType(m)))) {
+                throw new DefinitionException(where + "'min' and 'max' apply to basic attributes that can be "
+                        + "compared, not " + e.getKey());
+            }
+            set.put(e.getKey(), new Field(m, field.required(), field.allowed(), field.description(),
+                    bound(d, m, e.getKey(), f.min(), set, fixed, where),
+                    bound(d, m, e.getKey(), f.max(), set, fixed, where)));
+        }
         Map<DatabaseMapping, AttributePath> copy = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : defCopy.entrySet()) {
-            if (set.containsKey(e.getKey()) || defFixed.containsKey(e.getKey())) {
+            if (defFixed.containsKey(e.getKey())) {
                 throw new DefinitionException(where + "'" + e.getKey() + "' is copied, so it cannot also be "
-                        + "under set or fixed");
+                        + "under fixed");
+            }
+            if (set.containsKey(e.getKey()) && set.get(e.getKey()).required()) {
+                throw new DefinitionException(where + "'" + e.getKey() + "' is copied and required: make it optional "
+                        + "under set, so the copy is its default, or remove it from set or copy");
             }
             DatabaseMapping target = settable(d, e.getKey(), lock, action, where);
             if (!target.isDirectToFieldMapping()) {
                 throw new DefinitionException(where + "copy target '" + e.getKey() + "' must be a basic attribute");
             }
-            AttributePath source = AttributePath.resolve(d, e.getValue());
-            DatabaseMapping via = source.mappings().get(0);
-            if (source.mappings().size() < 2 || !source.isBasic() || source.traversesCollection()
-                    || (!set.containsKey(via.getAttributeName()) && !fixed.containsKey(via))) {
-                throw new DefinitionException(where + "copy source '" + e.getValue() + "' must be a basic "
-                        + "attribute reached through a to-one relationship under set or fixed");
-            }
-            if (!wrapper(source.type()).equals(wrapper(Mappings.attributeType(target)))) {
-                throw new DefinitionException(where + "cannot copy " + e.getValue() + " ("
-                        + source.type().getSimpleName() + ") into " + e.getKey() + " ("
-                        + Mappings.attributeType(target).getSimpleName() + ")");
-            }
-            copy.put(target, source);
+            copy.put(target, related(d, target, e.getKey(), e.getValue(), set, fixed, where, "copy source"));
         }
         return new Part(d, set, fixed, copy);
+    }
+
+    /**
+     * Resolves a path to a basic attribute of a related entity, reached through a to-one relationship the write
+     * sets, whose type matches the target's.
+     */
+    private static AttributePath related(ClassDescriptor d, DatabaseMapping target, String name, String path,
+                                         Map<String, Field> set, Map<DatabaseMapping, Object> fixed, String where,
+                                         String what) {
+        AttributePath source = AttributePath.resolve(d, path);
+        DatabaseMapping via = source.mappings().get(0);
+        if (source.mappings().size() < 2 || !source.isBasic() || source.traversesCollection()
+                || (!set.containsKey(via.getAttributeName()) && !fixed.containsKey(via))) {
+            throw new DefinitionException(where + what + " '" + path + "' must be a basic "
+                    + "attribute reached through a to-one relationship under set or fixed");
+        }
+        if (!wrapper(source.type()).equals(wrapper(Mappings.attributeType(target)))) {
+            throw new DefinitionException(where + "cannot use " + path + " ("
+                    + source.type().getSimpleName() + ") for " + name + " ("
+                    + Mappings.attributeType(target).getSimpleName() + ")");
+        }
+        return source;
+    }
+
+    /** A min or max: a literal converted to the attribute's type, or {@code {path: ...}} on a related entity. */
+    private static Object bound(ClassDescriptor d, DatabaseMapping m, String name, Object raw,
+                                Map<String, Field> set, Map<DatabaseMapping, Object> fixed, String where) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof Map<?, ?> map) {
+            if (map.size() != 1 || !(map.get("path") instanceof String path)) {
+                throw new DefinitionException(where + "a bound on '" + name + "' is a value or {path: ...}");
+            }
+            return related(d, m, name, path, set, fixed, where, "bound");
+        }
+        return Mappings.convert(raw, Mappings.attributeType(m), name);
     }
 
     private static Object fixedValue(DatabaseMapping m, String name, Object value, String where) {

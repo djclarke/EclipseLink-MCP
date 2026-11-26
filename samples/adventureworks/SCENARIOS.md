@@ -11,9 +11,9 @@ dates, and the order ids if the build differs, will not match yours exactly.
 | # | Scenario | Caller | Shows |
 |---|---|---|---|
 | 1 | [Why did France dip?](#1-sales-analyst-why-did-france-dip) | Analyst, read-only | Named reports with grouping and path filters; an agent checking its own conclusion |
-| 2 | [A customer's change request](#2-order-desk-a-customers-change-request) | Order desk, may write | Versions carried in the JSON; an order line locked through its order; recomputed totals |
+| 2 | [A customer's change request](#2-order-desk-a-customers-change-request) | Order desk, may write | A negotiated price, confirmed before it is written; versions carried in the JSON; a line locked through its order |
 | 3 | [Someone else changed the order first](#3-order-desk-someone-else-changed-the-order-first) | Order desk, may write | `CONFLICT` with a forced refresh, and the three ways to decide |
-| 4 | [Pricing review](#4-pricing-review-did-the-store-pay-the-right-price) | Analyst, read-only | Effective-dated history; comparing order lines with the price at the time |
+| 4 | [Pricing review](#4-pricing-review-is-the-open-order-priced-as-the-store-pays) | Analyst, read-only | Effective-dated history; comparing an order with what the customer has always paid |
 | 5 | [An analyst asks for a change](#5-an-analyst-asks-for-a-change) | Analyst, read-only | One deployment, write tools only for callers allowed to write |
 
 ## 1. Sales analyst: why did France dip?
@@ -53,21 +53,23 @@ It lists the 21 stores with no Q2 order as the ones to check once the data is co
 ## 2. Order desk: a customer's change request
 
 **Prompt.** *"Two requests from this morning's inbox. Riders Company wants two red Sport-100 helmets added to
-their open order. And Ben Adams says his email is now ben.adams@example.com."*
+their open order, at their usual price. And Ben Adams says his email is now ben.adams@example.com."*
 
 | Step | Tool | Arguments | What comes back |
 |---|---|---|---|
 | 1 | `query_entities` | `Customer`, filter `store.name` eq Riders Company | Two customers for the store, 579 and 29486 |
 | 2 | `query_open_orders` | `customerId` 29486 | Order 75128, in process, `revisionNumber` 1, 2,505.44, a Road-250 and a pedal |
 | 3 | `query_entities` | `Product`, filter `name` like `Sport-100%` | 707 *Sport-100 Helmet, Red*, list price 34.99 |
-| 4 | | | The agent confirms: *"Add 2 × Sport-100 Helmet, Red at 34.99 to order 75128 (new total 2,575.42)?"* |
-| 5 | `add_order_line` | `salesOrder` 75128, `salesOrderVersion` 1, `product` 707, `orderQty` 2 | The line at 34.99; `locked`: order 75128 now at revision 2 |
-| 6 | `query_entities` | `Person`, firstName Ben, lastName Adams, select `emailAddresses.emailAddressId`, `.emailAddress`, `.version` | Person 1770, address 1066 `ben2@adventure-works.com`, version 1 |
-| 7 | | | The agent confirms the change of address |
-| 8 | `update_email_address` | `id` {businessEntityId 1770, emailAddressId 1066}, `version` 1, `emailAddress` ben.adams@example.com | The address at version 2 |
+| 4 | `query_entities` | `SalesOrderDetail`, filter `salesOrder.customer.customerId` eq 29486 and `product.productId` eq 707, select `salesOrder.orderDate`, `orderQty`, `unitPrice` | 20.1865 in 2022 and 2023, 20.994 in January 2025: 60% of the list price each time |
+| 5 | | | The agent asks: *"Riders Company has always paid 60% of list for this helmet, which is 20.994 today against a list price of 34.99. Has their account manager agreed 20.994 for this order? If not, I'll add it at list."* The user checks and confirms |
+| 6 | `add_order_line` | `salesOrder` 75128, `salesOrderVersion` 1, `product` 707, `orderQty` 2, `unitPrice` "20.994" | The line at 20.994; `locked`: order 75128 now at revision 2, total due 2,547.43 |
+| 7 | `query_entities` | `Person`, firstName Ben, lastName Adams, select `emailAddresses.emailAddressId`, `.emailAddress`, `.version` | Person 1770, address 1066 `ben2@adventure-works.com`, version 1 |
+| 8 | | | The agent confirms the change of address |
+| 9 | `update_email_address` | `id` {businessEntityId 1770, emailAddressId 1066}, `version` 1, `emailAddress` ben.adams@example.com | The address at version 2 |
 
-**Outcome.** Both changes are made, each after the user confirms it. The order's subtotal and total due are
-recomputed over all its lines in the same transaction as the new line.
+**Outcome.** Both changes are made, each after the user confirms it, and the helmets go on at the price the
+seller agreed. The order's subtotal and total due are recomputed over all its lines in the same transaction as
+the new line. Without a confirmed price the agent leaves `unitPrice` out and the line is at list.
 
 **What it shows.**
 
@@ -76,9 +78,12 @@ recomputed over all its lines in the same transaction as the new line.
 - **Lock through the parent.** An order line has no version of its own. `add_order_line` checks and increments
   the order's revision, so adding a line and shipping the order can never both succeed against the same read.
   Existing lines cannot be edited at all, because the definition allows only `create` for `SalesOrderDetail`.
-- **Server rules the agent cannot skip.** The line's price is copied from the product's list price, the
-  discount is fixed at none, and a line can only be added while the order is in process. The agent supplies
-  the product and the quantity, nothing else.
+- **A negotiated price, inside rules the agent cannot skip.** `unitPrice` is optional: left out, the server
+  copies the product's list price into the line. Given, it must be between 0 and the list price
+  (`max: { path: product.listPrice }`), so a typo of 209.94 is refused with `INVALID_PARAMETER` and nothing is
+  changed. The tool's description tells the agent to check what the customer paid before and to confirm any
+  lower price with the user, who agrees it with the seller. The discount is fixed at none, and a line can only
+  be added while the order is in process.
 - **Composite keys** (`businessEntityId`, `emailAddressId`) are passed as an `id` object.
 
 ## 3. Order desk: someone else changed the order first
@@ -127,34 +132,34 @@ request. Should I leave it, or add two more?"* Only if the user says the custome
   (3b: decide whether it is a duplicate, a conflict, or still applies). In both, the agent decides with the user
   instead of retrying.
 
-## 4. Pricing review: did the store pay the right price?
+## 4. Pricing review: is the open order priced as the store pays?
 
-**Prompt.** *"How has the price of the red Sport-100 helmet changed, and has Riders Company been paying the right
-price for it?"*
+**Prompt**, from an analyst, read-only: *"Before the order desk approves Riders Company's open order, check that
+it's priced the way they usually pay."*
 
 | Step | Tool | Arguments | What comes back |
 |---|---|---|---|
-| 1 | `query_entities` | `Product`, `name` like `Sport-100%` | 707 *Sport-100 Helmet, Red*, list price 34.99 |
-| 2 | `query_list_price_history` | `productId` 707 | 33.6442 from 2022-05-30, 33.6442 from 2023-05-30, 34.99 from 2024-05-29 (current) |
-| 3 | `query_entities` | `SalesOrderDetail`, filter `salesOrder.customer.customerId` eq 29486 and `product.productId` eq 707, select `salesOrder.orderDate`, `orderQty`, `unitPrice`, `unitPriceDiscount` | Oct 2022 and Apr 2023: 20.1865; Jan 2025: 20.994. No discount on any line |
-| 4 | `query_open_orders` | `customerId` 29486 | Today's order 75128 with the helmets at 34.99 (after scenario 2) |
+| 1 | `query_open_orders` | `customerId` 29486 | Order 75128, as seeded: 1 × Road-250 Red, 58 at 2,443.35 and 1 × ML Road Pedal at 62.09, total 2,505.44 |
+| 2 | `query_list_price_history` | `productId` 792, then 939 | Road-250: 2,181.5625 until May 2024, 2,443.35 since. Pedal: 62.09 since May 2024. So both lines are at today's list price |
+| 3 | `query_entities` | `SalesOrderDetail`, filter `salesOrder.customer.customerId` eq 29486 and `product.productId` in [792, 939], select `salesOrder.orderDate`, `product.name`, `unitPrice`, oldest first | Road-250 at 1,308.9375 in 2023 and early 2024, then 1,466.01; pedal at 37.254 |
+| 4 | | | The agent matches each price with the list price in force on its order date |
 
-**Outcome.** The agent matches each line with the list price in force on its order date: 20.1865 is 60% of
-33.6442, and 20.994 is 60% of 34.99. *"The list price rose 4% in May 2024, to 34.99. Riders Company has always
-paid 60% of list, the reseller price, with no discount recorded on the line. Today's order line is at the full
-34.99, 67% more than they paid in January. Worth checking with the account manager before it ships."* (Every
-historical store order line in AdventureWorks is at 60% of list. The sample's write operations copy the full
-list price, so this is a real difference the review finds.)
+**Outcome.** *"Every one of Riders Company's 12 earlier orders was at 60% of the list price in force at the
+time: 1,308.9375 is 60% of 2,181.5625, and 1,466.01 is 60% of 2,443.35. Order 75128 is at full list, 2,505.44,
+where their usual price would be 1,503.26. Please ask the order desk to confirm the price with their account
+manager before approving it."* Lines cannot be changed once added, so if the reseller price stands, the order desk
+cancels 75128 (`update_sales_order`, status 6) and places it again with `unitPrice` on each line.
 
 **What it shows.**
 
 - **Effective-dated history the database already keeps.** `ProductListPriceHistory` has a start and end date
   per price; a named query returns it in order. History maintained by EclipseLink, and `asOf` reads of any
   entity, are on the roadmap.
-- **Snapshots on write.** `add_order_line` copies the list price into the line, so a later price change never
-  alters an order. The review can compare what was charged with what the price was.
+- **Snapshots on write.** Each line keeps the price it was sold at, so a later change to the list price never
+  alters an order, and the review can compare what was charged with what the price was.
 - **Deep paths for one-off questions.** `query_entities` filters on `salesOrder.customer.customerId` and selects
-  through `salesOrder` without a named query for it.
+  through `salesOrder` and `product` without a named query for it.
+- **Read-only analysis that hands off.** The analyst finds the problem; a person allowed to write decides.
 
 ## 5. An analyst asks for a change
 
@@ -196,12 +201,22 @@ call report_sales_by_channel   '{"fromDate":"2025-05-01T00:00:00","toDate":"2025
 
 # 2. Change request (dry runs: add --commit to keep them)
 call query_open_orders '{"customerId":29486}'
-call add_order_line '{"salesOrder":75128,"salesOrderVersion":1,"product":707,"orderQty":2}'
+call query_entities '{"entity":"SalesOrderDetail","filter":{"and":[{"path":"salesOrder.customer.customerId","op":"eq",
+  "value":29486},{"path":"product.productId","op":"eq","value":707}]},"select":["salesOrder.orderDate","orderQty",
+  "unitPrice"]}'                                                        # what they paid before: 60% of list
+call add_order_line '{"salesOrder":75128,"salesOrderVersion":1,"product":707,"orderQty":2,"unitPrice":"20.994"}'
+call add_order_line '{"salesOrder":75128,"salesOrderVersion":1,"product":707,"orderQty":2,"unitPrice":"209.94"}'  # above list: refused
 call query_entities '{"entity":"Person","filter":{"and":[{"path":"firstName","op":"eq","value":"Ben"},
   {"path":"lastName","op":"eq","value":"Adams"}]},"select":["businessEntityId","emailAddresses.emailAddressId",
   "emailAddresses.emailAddress","emailAddresses.version"]}'
 call update_email_address '{"id":{"businessEntityId":1770,"emailAddressId":1066},"version":1,
   "emailAddress":"ben.adams@example.com"}'
+
+# 4. Pricing review (before 3a, which ships order 75128)
+call query_list_price_history '{"productId":792}'
+call query_entities '{"entity":"SalesOrderDetail","filter":{"and":[{"path":"salesOrder.customer.customerId","op":"eq",
+  "value":29486},{"path":"product.productId","op":"in","value":[792,939]}]},"select":["salesOrder.orderDate",
+  "product.name","unitPrice"],"orderBy":[{"by":"salesOrder.orderDate","dir":"asc"}]}'
 
 # 3a. The order shipped: a colleague ships it, then the agent adds a line with the revision it read
 call --commit update_sales_order '{"id":75128,"revisionNumber":1,"status":5,"shipDate":"'"$(date +%Y-%m-%dT%H:%M:%S)"'"}'
@@ -212,11 +227,6 @@ call --commit add_order_line '{"salesOrder":75133,"salesOrderVersion":1,"product
 call add_order_line '{"salesOrder":75133,"salesOrderVersion":1,"product":707,"orderQty":2}'
 call find_entity '{"entity":"SalesOrderHeader","id":75133,"select":["revisionNumber","status","lines"],"refresh":true}'
 
-# 4. Pricing review
-call query_list_price_history '{"productId":707}'
-call query_entities '{"entity":"SalesOrderDetail","filter":{"and":[{"path":"salesOrder.customer.customerId","op":"eq",
-  "value":29486},{"path":"product.productId","op":"eq","value":707}]},"select":["salesOrder.orderDate","orderQty",
-  "unitPrice","unitPriceDiscount"],"orderBy":[{"by":"salesOrder.orderDate","dir":"asc"}]}'
 ```
 
 Scenario 3 commits; reset the data afterwards (README step 7). Run `query_open_orders` first if your order ids

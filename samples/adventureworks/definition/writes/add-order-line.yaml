@@ -12,18 +12,22 @@
 
 name: add_order_line
 title: Add a line to a sales order
-description: "Add a product line to an order that is still in process (status 1), at the product's current list price with no discount. Pass the order's revisionNumber as salesOrderVersion: two people changing the same order at once cannot both succeed, so the second gets CONFLICT and must read the order and its lines again."
+description: "Add a product line to an order that is still in process (status 1), at the product's current list price, or at a lower unit price agreed with the customer (never above list). Store customers usually pay a negotiated reseller price: look at what they paid on earlier orders, and confirm any lower price with the user before passing it. Pass the order's revisionNumber as salesOrderVersion: two people changing the same order at once cannot both succeed, so the second gets CONFLICT and must read the order and its lines again."
 action: create
 root: SalesOrderDetail              # locked through its order: pass salesOrderVersion
 set:
   salesOrder: { required: true, description: "The order (salesOrderId)" }
   product: { required: true, description: "The product sold (productId)" }
   orderQty: { required: true, description: "Units, 1 or more" }
+  unitPrice:                        # a negotiated price; the list price when left out
+    description: "Price per unit agreed with the customer, if lower than the list price. Leave it out to charge the list price. Pass a lower price only after the user has confirmed that it was agreed."
+    min: 0
+    max: { path: product.listPrice }
 fixed:
   specialOffer: 1                   # No Discount
   unitPriceDiscount: 0
   modifiedDate: $now
-copy:                               # a snapshot: a later price change does not alter the line
+copy:                               # the default, a snapshot: a later price change does not alter the line
   unitPrice: product.listPrice
 condition: { path: salesOrder.status, op: eq, value: 1 }
 recompute:                          # the order's totals, over all of its lines including this one

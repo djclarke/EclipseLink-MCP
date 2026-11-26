@@ -520,6 +520,46 @@ class WriteToolsTest {
     }
 
     @Test
+    void aCopiedAttributeThatIsAlsoSetIsADefaultWithinItsBounds() throws IOException {
+        Path dir = copyOrderDesk();
+        Path write = dir.resolve("writes/add-order-line.yaml");
+        Files.writeString(write, Files.readString(write).replace(
+                "  quantity: { required: true, description: \"Units, 1 or more\" }\n",
+                "  quantity: { required: true, description: \"Units, 1 or more\" }\n"
+                        + "  price: { min: 0, max: { path: product.price } }\n"));
+        try (ModelRuntime m = withWritable(dir, Map.of("OrderLine", List.of("create")))) {
+            ToolService t = new ToolService(m);
+            long before = ((Number) db("SELECT COUNT(*) FROM ORDER_LINE WHERE ORDER_ID = 1002")).longValue();
+            Map<?, ?> listed = (Map<?, ?>) t.call("add_order_line",
+                    args("order", 1002, "orderVersion", 1, "product", 2, "quantity", 1)).get("item");
+            assertEquals("120.00", listed.get("price"), "left out: copied from the product");
+            Map<?, ?> agreed = (Map<?, ?>) t.call("add_order_line",
+                    args("order", 1002, "orderVersion", 2, "product", 2, "quantity", 1, "price", "99.50")).get("item");
+            assertEquals("99.50", agreed.get("price"), "given: the caller's value");
+            ToolException above = assertThrows(ToolException.class, () -> t.call("add_order_line",
+                    args("order", 1002, "orderVersion", 3, "product", 2, "quantity", 1, "price", "120.01")));
+            assertEquals(ToolException.Code.INVALID_PARAMETER, above.code());
+            assertTrue(above.getMessage().contains("above its maximum (product.price, 120.00)"), above.getMessage());
+            ToolException below = assertThrows(ToolException.class, () -> t.call("add_order_line",
+                    args("order", 1002, "orderVersion", 3, "product", 2, "quantity", 1, "price", "-1")));
+            assertTrue(below.getMessage().contains("below its minimum (0"), below.getMessage());
+            assertEquals(before + 2, ((Number) db("SELECT COUNT(*) FROM ORDER_LINE WHERE ORDER_ID = 1002")).longValue(),
+                    "the two refused lines changed nothing");
+            String tool = t.tools().stream().filter(x -> x.name().equals("add_order_line")).findFirst()
+                    .orElseThrow().description();
+            assertTrue(tool.contains("Unless given, copies price from product.price"), tool);
+        }
+        Files.writeString(write, Files.readString(write).replace("price: { min: 0,",
+                "price: { required: true, min: 0,"));
+        DefinitionException required = assertThrows(DefinitionException.class, () -> {
+            try (ModelRuntime m = withWritable(dir, Map.of("OrderLine", List.of("create")))) {
+                new ToolService(m);
+            }
+        });
+        assertTrue(required.getMessage().contains("is copied and required"), required.getMessage());
+    }
+
+    @Test
     void createCustomerGeneratesTheIdAndStartsAtVersionOne() {
         Map<?, ?> item = (Map<?, ?>) call("create_customer", "name", "Stark Industries", "region", "EAST",
                 "email", "orders@stark.example").get("item");

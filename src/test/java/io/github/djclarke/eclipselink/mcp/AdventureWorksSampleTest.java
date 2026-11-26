@@ -113,14 +113,23 @@ class AdventureWorksSampleTest {
                 assertEquals(0, new BigDecimal("174.95").compareTo(new BigDecimal((String) order.get("totalDue"))),
                         "5 units at 34.99, the current list price");
 
-                // B ships the order; A, who read revision 1, then adds a line. A check constraint keeps the ship
+                // The store's negotiated reseller price, 60% of list, on a line; above list is refused.
+                Map<?, ?> line = (Map<?, ?>) tools.call("add_order_line", Map.of("salesOrder", id,
+                        "salesOrderVersion", 1, "product", 708, "orderQty", 2, "unitPrice", "20.994")).get("item");
+                assertEquals(0, new BigDecimal("20.994").compareTo(new BigDecimal((String) line.get("unitPrice"))));
+                ToolException aboveList = assertThrows(ToolException.class, () -> tools.call("add_order_line",
+                        Map.of("salesOrder", id, "salesOrderVersion", 2, "product", 708, "orderQty", 1,
+                                "unitPrice", "35.00")));
+                assertEquals(ToolException.Code.INVALID_PARAMETER, aboveList.code(), aboveList.getMessage());
+
+                // B ships the order; A, who read revision 2, then adds a line. A check constraint keeps the ship
                 // date on or after the order date, which is now.
                 String shipDate = java.time.LocalDateTime.now().plusHours(1).withNano(0).toString();
                 Map<?, ?> shipped = (Map<?, ?>) tools.call("update_sales_order", Map.of("id", id,
-                        "revisionNumber", 1, "status", 5, "shipDate", shipDate)).get("item");
-                assertEquals(2, ((Number) shipped.get("revisionNumber")).intValue());
+                        "revisionNumber", 2, "status", 5, "shipDate", shipDate)).get("item");
+                assertEquals(3, ((Number) shipped.get("revisionNumber")).intValue());
                 ToolException e = assertThrows(ToolException.class, () -> tools.call("add_order_line",
-                        Map.of("salesOrder", id, "salesOrderVersion", 1, "product", 707, "orderQty", 1)));
+                        Map.of("salesOrder", id, "salesOrderVersion", 2, "product", 707, "orderQty", 1)));
                 assertEquals(ToolException.Code.CONFLICT, e.code(), e.getMessage());
                 assertEquals(false, e.details().get("conditionHolds"), "shipped: a logical conflict, do not retry");
             }

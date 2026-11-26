@@ -27,7 +27,8 @@ import java.util.Set;
  * @param condition filter in the shared grammar, values only; checked in the same transaction
  * @param locking null to require the entity's lock (spec 4.9), or "none"
  * @param copy attributes the server copies from a related entity when it is set, e.g. {@code price:
- *             product.price}, so the row keeps a snapshot of values that may change later
+ *             product.price}, so the row keeps a snapshot of values that may change later. An attribute that is
+ *             also an optional {@code set} attribute is copied only when the caller leaves it out (a default)
  * @param items create only: one-to-many relationships whose rows are created in the same call, by name (an
  *              order's {@code lines})
  * @param recompute create only: attributes of the lock holder the server recomputes as the sum, over all rows of
@@ -65,8 +66,11 @@ public record WriteDefinition(
 
     /**
      * @param allowed permitted values, in the type contract's formats; null for any
+     * @param min the smallest value allowed: a value in the type contract's format, or {@code {path:
+     *            relationship.attribute}} for a value read from a related entity when the write is made; null for none
+     * @param max the largest value allowed, in the same forms as {@code min}; null for none
      */
-    public record Field(Boolean required, List<Object> allowed, String description) {
+    public record Field(Boolean required, List<Object> allowed, String description, Object min, Object max) {
         public Field {
             required = required != null && required;
         }
