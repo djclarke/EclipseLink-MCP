@@ -87,8 +87,9 @@ order 75124 at revision 1. B ships it; A then adds a line with the revision it r
 
 ```sh
 call() { java -jar "$JAR" call --definition samples/adventureworks/definition "$@"; }   # works in bash and zsh
+now=$(date +%Y-%m-%dT%H:%M:%S)                     # ship it now
 call --commit update_sales_order \
-  '{"id":75124,"revisionNumber":1,"status":5,"shipDate":"2026-12-01T10:00:00"}'   # B ships: revision 2
+  '{"id":75124,"revisionNumber":1,"status":5,"shipDate":"'"$now"'"}'   # B ships: revision 2
 call add_order_line '{"salesOrder":75124,"salesOrderVersion":1,"product":707,"orderQty":3}'
 ```
 
@@ -96,7 +97,8 @@ A gets `CONFLICT` with `details.conditionHolds: false`: the order is no longer i
 logical conflict, and A's agent must not retry but tell A that the order shipped without the line.
 `details.refresh` is the `find_entity` call that shows the shipped order and its lines. (The first call
 commits, so reset afterwards. The ship date must not be before the order date, which a check constraint in
-the database enforces.)
+the database enforces; the open orders are dated up to four days before the database was built, so shipping
+them now always passes.)
 
 ## The database
 
