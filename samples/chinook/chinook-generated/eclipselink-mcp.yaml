@@ -1,0 +1,10 @@
+apiVersion: eclipselink-mcp/v1
+server:
+  name: chinook
+  version: 0.1.0
+connection:
+  url: "${env:CHINOOK_DB_URL:-jdbc:postgresql://localhost:5432/chinook}"
+  user: "${env:CHINOOK_DB_USER:-mcp_reader}"
+  password: "${env:CHINOOK_DB_PASSWORD}"
+model:
+  mappings: model/eclipselink-orm.xml

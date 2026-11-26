@@ -217,7 +217,8 @@ public final class NamedWrite {
         }
         Action action = Action.valueOf(def.action().toUpperCase(java.util.Locale.ROOT));
         Lock lock = Lock.of(root);
-        if (lock == null && def.locking() == null) {
+        // A create needs no lock: a new row cannot conflict with a stale read (2.7).
+        if (lock == null && def.locking() == null && action != Action.CREATE) {
             throw new DefinitionException(where + root.getAlias() + " has no optimistic lock. Give it a version "
                     + "(edit set-version) or lock it through a relationship (edit lock-through), or declare "
                     + "'locking: none' to accept that the last write wins");
@@ -230,7 +231,8 @@ public final class NamedWrite {
             Part part = compilePart(root, def.set(), def.fixed(), def.copy(), lock, action, where);
             Map<String, Field> set = part.set();
             if (action == Action.CREATE && lock != null && lock.through() != null
-                    && !set.containsKey(lock.through().getAttributeName()) && !part.fixed().containsKey(lock.through())) {
+                    && !set.containsKey(lock.through().getAttributeName()) && !part.fixed().containsKey(lock.through())
+                    && !(throughKey(root, lock.through()) && !root.usesSequenceNumbers())) {
                 throw new DefinitionException(where + root.getAlias() + " is locked through '"
                         + lock.through().getAttributeName() + "', so a create must set it");
             }
@@ -529,7 +531,9 @@ public final class NamedWrite {
             case DELETE -> "Deletes one " + root.getAlias() + ".";
         });
         if (lock == null) {
-            sb.append(" No optimistic lock: the last write wins.");
+            if (action != Action.CREATE) {
+                sb.append(" No optimistic lock: the last write wins.");
+            }
         } else if (lock.through() == null) {
             if (action != Action.CREATE) {
                 sb.append(" Pass the '").append(lock.inputName()).append("' you read.");
@@ -777,7 +781,41 @@ public final class NamedWrite {
             }
         }
         part.apply(em, entity, args, action);
+        // A to-one relationship whose foreign key is part of the key (a join table's playlist and track) is
+        // read-only in the mapping: the key inputs name its target, which must exist. Linking it lets the lock
+        // through it find its holder, and the result show it.
+        for (DatabaseMapping m : root.getMappings()) {
+            if (throughKey(root, m) && entity.get(m.getAttributeName()) == null) {
+                entity.set(m.getAttributeName(), targetFromKey(em, (OneToOneMapping) m, entity));
+            }
+        }
         return entity;
+    }
+
+    /**
+     * Whether the lock-through relationship's foreign key is part of the entity's own key, as in a join table
+     * ({@code playlist_track (playlist_id, track_id)} locked through its playlist). The relationship is then
+     * read-only in the mapping, and a create finds the lock holder from the key inputs instead of from {@code set}.
+     */
+    private static boolean throughKey(ClassDescriptor root, DatabaseMapping through) {
+        return through instanceof OneToOneMapping o && !o.getForeignKeyFields().isEmpty()
+                && root.getPrimaryKeyFields().containsAll(o.getForeignKeyFields());
+    }
+
+    /** The target of a to-one relationship named by the key of a new entity (see throughKey). */
+    private DynamicEntity targetFromKey(EntityManager em, OneToOneMapping o, DynamicEntity entity) {
+        ClassDescriptor target = o.getReferenceDescriptor();
+        Map<String, Object> id = new LinkedHashMap<>();
+        for (var e : o.getSourceToTargetKeyFields().entrySet()) {
+            DatabaseMapping source = root.getObjectBuilder().getMappingForField(e.getKey());
+            DatabaseMapping key = target.getObjectBuilder().getMappingForField(e.getValue());
+            if (source == null || key == null || !source.isDirectToFieldMapping()) {
+                throw new IllegalStateException(root.getAlias() + ": cannot map " + e.getKey() + " to the "
+                        + target.getAlias() + " key");
+            }
+            id.put(key.getAttributeName(), entity.get(source.getAttributeName()));
+        }
+        return find(em, target, id.size() == 1 ? id.values().iterator().next() : id, o.getAttributeName());
     }
 
     /** Builds each items row, links it to the root, and sets the root's sums. Persisted by the caller. */
