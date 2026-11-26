@@ -50,10 +50,20 @@ Phases in order; sizes are rough working days.
 |---|---|---|---|
 | K1 | `mcp.kind` and `edit set-kind`; the runtime maps kinds to EclipseLink read-only and cache settings; `describe_entity` reports the kind | Next | Default `external` keeps today's behavior. |
 | K2 | Startup and `edit` rules: `tools.writes` only on writable entities; reference entities refer only to reference entities; `copy` reads its source from the database | Next | |
-| K3 | `edit multitenant` (single table, table per tenant) and descriptor `tenancy.tenant` for stdio, with the relationship rules | After K1 | Sample: a tenant column added to the order desk, with PRODUCT shared. Tests prove one tenant never sees, or writes, another's rows. |
+| K3 | `edit multitenant` (single table, table per tenant) and descriptor `tenancy.tenant` for stdio, with the relationship rules | After K1 | Samples: a tenant column added to the order desk, with PRODUCT shared; in AdventureWorks, `tenant_id` on customers, orders and lines per territory group (S1). Tests prove one tenant never sees, or writes, another's rows. |
 | K4 | `tenancy.claim` from the validated token | With H2 (OAuth) | Needs the OAuth resource server. |
 | K5 | Desktop bundle asks for the tenant (`user_config`) | With P2 | |
 | K6 | Skill step: classify each entity's kind and tenancy | With K1 | Written in this spec change; commands land with K1 and K3. |
+
+## Samples (see [samples/README.md](../samples/README.md))
+
+| # | Item | Milestone | Notes |
+|---|---|---|---|
+| S1 | AdventureWorks multitenancy: one tenant per territory group (North America, Europe, Pacific), product catalogue shared | With K3 | `db/overlay.sql` adds and fills the column; `shape.sh` adds `edit multitenant`. |
+| S2 | AdventureWorks entity kinds: catalogue and lookup tables `reference`, products `external`, orders `writable` | With K1 | `shape.sh` adds `edit set-kind`. |
+| S3 | AdventureWorks history: an EclipseLink-maintained history of sales orders for as-of reads | With history support | Its own effective-dated tables are queryable today. |
+| S4 | Publish the AdventureWorks database image (for example to GitHub Container Registry) so `docker compose up` needs no build | Packaging | Built by CI from `db/`. |
+| S5 | Run the AdventureWorks tests in CI against the image | With S4 | Today they run when `AW_DB_URL` is set. |
 
 ## Other later milestones
 
