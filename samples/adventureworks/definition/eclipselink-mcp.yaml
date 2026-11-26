@@ -21,9 +21,11 @@ server:
     are in USD. Order status is a number: 1 in process, 2 approved, 3 backordered, 4 rejected, 5 shipped,
     6 cancelled. Historical orders run from 2022 to mid-2025. If write tools are available, they place
     orders for store customers, add lines to orders still in process, approve, ship or cancel orders, and
-    correct an email address; lines cannot be changed once added, and products are read-only. Find a
-    customer's addresses with query_customer_addresses before placing an order. Confirm each change with
-    the user first.
+    correct an email address; lines cannot be changed once added, and products are read-only. A line is at
+    list price unless a lower, negotiated unitPrice is given: store customers usually pay a reseller price,
+    so check what they paid before, and confirm any lower price with the user, who agrees it with the
+    seller. Find a customer's addresses with query_customer_addresses before placing an order. Confirm each
+    change with the user first.
 
 connection:
   # One account for every caller. Who may change data is decided per caller, by the write scope on their

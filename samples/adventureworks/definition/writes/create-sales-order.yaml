@@ -12,7 +12,7 @@
 
 name: create_sales_order
 title: Place a sales order
-description: "Place a new sales order for a customer, with all of its lines in the same call. The database assigns the order and line ids. The order starts in process (status 1) at revision 1, dated now. Each line is sold at the product's current list price with no discount; tax and freight are zero, so the total due is the sum of the lines."
+description: "Place a new sales order for a customer, with all of its lines in the same call. The database assigns the order and line ids. The order starts in process (status 1) at revision 1, dated now. Each line is sold at the product's current list price, or at a lower unitPrice agreed with the customer (never above list), with no discount; store customers usually pay a negotiated reseller price, so check what they paid before and confirm any lower price with the user before passing it; tax and freight are zero, so the total due is the sum of the lines."
 action: create
 root: SalesOrderHeader
 set:
@@ -38,11 +38,15 @@ items:
     set:
       product: { required: true, description: "The product sold (productId)" }
       orderQty: { required: true, description: "Units, 1 or more" }
+      unitPrice:                        # a negotiated price; the list price when left out
+        description: "Price per unit agreed with the customer, if lower than the list price. Leave it out to charge the list price. Pass a lower price only after the user has confirmed that it was agreed."
+        min: 0
+        max: { path: product.listPrice }
     fixed:
       specialOffer: 1               # No Discount
       unitPriceDiscount: 0
       modifiedDate: $now
-    copy:                           # a snapshot: a later price change does not alter the line
+    copy:                           # the default, a snapshot: a later price change does not alter the line
       unitPrice: product.listPrice
     sum:
       subTotal: [orderQty, unitPrice]
