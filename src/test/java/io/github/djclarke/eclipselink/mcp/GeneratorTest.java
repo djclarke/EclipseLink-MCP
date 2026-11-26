@@ -170,6 +170,30 @@ class GeneratorTest {
     }
 
     @Test
+    void binaryDomainAndReservedWordColumns() throws Exception {
+        try (Statement s = mem.createStatement()) {
+            s.execute("CREATE SCHEMA BIN");
+            s.execute("CREATE DOMAIN BIN.PHONE AS VARCHAR(25)");
+            s.execute("CREATE TABLE BIN.PHOTO (ID INT PRIMARY KEY, PHONE BIN.PHONE, THUMB VARBINARY(16), \"GROUP\" VARCHAR(5))");
+            s.execute("INSERT INTO BIN.PHOTO VALUES (1, '555-0100', X'47494638', 'NA')");
+        }
+        Path out = dir.resolve("bin");
+        assertEquals(0, init("--url", MEM, "--user", "sa", "--out", out.toString(), "--schema", "BIN",
+                "--include", "*"));
+        try (ModelRuntime model = ModelRuntime.start(new DefinitionLoader(n -> null).load(out))) {
+            Map<?, ?> photo = (Map<?, ?>) new ToolService(model).call("find_entity",
+                    Map.of("entity", "Photo", "id", 1)).get("item");
+            assertEquals("555-0100", photo.get("phone"));
+            assertEquals("R0lGOA==", photo.get("thumb"), "binary as base64");
+            assertEquals("NA", photo.get("group"), "a reserved word as a column name is quoted in the mapping");
+        }
+        // A PostgreSQL DOMAIN is reported as DISTINCT, with the type it is based on as SOURCE_DATA_TYPE.
+        assertEquals(java.sql.Types.VARCHAR, SchemaReader.jdbcType(java.sql.Types.DISTINCT, java.sql.Types.VARCHAR));
+        assertEquals(java.sql.Types.DISTINCT, SchemaReader.jdbcType(java.sql.Types.DISTINCT, null));
+        assertEquals(java.sql.Types.INTEGER, SchemaReader.jdbcType(java.sql.Types.INTEGER, null));
+    }
+
+    @Test
     void versionColumnsNamedInTheSelection() throws Exception {
         Path sel = dir.resolve("versions.yaml");
         Files.writeString(sel, """

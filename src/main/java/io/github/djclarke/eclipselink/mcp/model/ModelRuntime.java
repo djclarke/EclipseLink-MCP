@@ -37,6 +37,8 @@ import javax.sql.DataSource;
 import org.eclipse.persistence.config.PersistenceUnitProperties;
 import org.eclipse.persistence.descriptors.ClassDescriptor;
 import org.eclipse.persistence.dynamic.DynamicClassLoader;
+import org.eclipse.persistence.dynamic.DynamicClassWriter;
+import org.eclipse.persistence.internal.jpa.metadata.MetadataDynamicClassWriter;
 import org.eclipse.persistence.jpa.JpaHelper;
 import org.eclipse.persistence.jpa.PersistenceProvider;
 import org.eclipse.persistence.sessions.server.Server;
@@ -93,7 +95,7 @@ public final class ModelRuntime implements AutoCloseable {
         Descriptor d = definition.descriptor();
         URLClassLoader resourceLoader = new URLClassLoader(
                 new URL[] {toUrl(definition.directory())}, ModelRuntime.class.getClassLoader());
-        DynamicClassLoader dcl = new DynamicClassLoader(resourceLoader);
+        DynamicClassLoader dcl = new EntityClassLoader(resourceLoader);
 
         Map<String, Object> props = new HashMap<>();
         props.put(PersistenceUnitProperties.CLASSLOADER, dcl);
@@ -272,5 +274,25 @@ public final class ModelRuntime implements AutoCloseable {
         @Override public ClassLoader getClassLoader() { return loader; }
         @Override public void addTransformer(ClassTransformer transformer) { }
         @Override public ClassLoader getNewTempClassLoader() { return loader; }
+    }
+
+    /**
+     * Creates the dynamic entity classes without bean accessors. EclipseLink 5.0's
+     * {@code MetadataDynamicClassWriter} adds a getter and setter per attribute, and writes an invalid method
+     * descriptor for an array type, so an entity with a {@code byte[]} attribute (any binary column) could not
+     * be created. The server reads and writes attributes through {@code DynamicEntity}, never through
+     * accessors, so the plain writer gives the same entities.
+     */
+    static final class EntityClassLoader extends DynamicClassLoader {
+
+        EntityClassLoader(ClassLoader parent) {
+            super(parent);
+        }
+
+        @Override
+        public Class<?> createDynamicClass(String className, DynamicClassWriter writer) {
+            return super.createDynamicClass(className,
+                    writer instanceof MetadataDynamicClassWriter ? new DynamicClassWriter() : writer);
+        }
     }
 }

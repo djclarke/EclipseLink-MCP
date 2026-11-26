@@ -923,7 +923,9 @@ include: ["ORDER*", "re:^CUST(OMER)?$"]   # glob, or regex with "re:"; case-inse
 exclude: ["*_AUDIT", "TMP_*"]          # removes pattern and FK matches; never removes a named table
 types: [TABLE, VIEW]                   # JDBC table types; default TABLE
 followForeignKeys: { depth: 1, direction: both }  # outgoing (default) | both; depth 0-10
-keys: { ORDER_SUMMARY_V: [ORDER_ID] }  # key for views or tables that declare no primary key
+keys: { ORDER_SUMMARY_V: [ORDER_ID] }  # key for views and tables that declare none; for a table that
+                                       # declares one, these columns replace it (a unique identity column
+                                       # instead of a composite key, so the database assigns new keys)
 versions: { LEGACY_ORDERS: REV_NO, AUDIT_LOG: none }   # version column per table, or none (7.4)
 maxTables: 200                         # fail rather than generate a huge model
 ```
@@ -970,7 +972,8 @@ Column, key and foreign key metadata is never read for tables outside the select
 ```
 
 - **Entities:** one VIRTUAL entity per selected table with a key. Table names become `UpperCamel` (`ORDER_LINE` → `OrderLine`) and columns become `lowerCamel`. Names are not singularized: renaming `Orders` to `Order` is the skill's first suggestion. A schema is written on `<table>` only when the selection names schemas.
-- **Types** come from `java.sql.Types`: integers → `Integer`/`Long`, `DECIMAL` with scale → `BigDecimal`, `DATE`/`TIME`/`TIMESTAMP` → `java.time`, character → `String`, binary → `byte[]`. A column of another type is skipped with a warning.
+- **Types** come from `java.sql.Types`: integers → `Integer`/`Long`, `DECIMAL` with scale → `BigDecimal`, `DATE`/`TIME`/`TIMESTAMP` → `java.time`, character → `String`, binary → `byte[]`. A distinct type (a PostgreSQL `DOMAIN`, such as AdventureWorks' `Phone`) maps as the type it is based on (`SOURCE_DATA_TYPE`). A column of another type (`uuid`, `xml`, ...) is skipped with a warning.
+- **Names that are SQL reserved words** (`GROUP`, `ORDER`, `USER`, ...) are written quoted in the mapping, with the case the database reported, so EclipseLink's SQL stays valid.
 - **Relationships:**
   - A foreign key to a selected table's primary key becomes a lazy `many-to-one`, named from the column (`CUSTOMER_ID` → `customer`). Its columns are no longer basic attributes. When the key columns are also part of the primary key, the join columns are written read-only.
   - The target gets the inverse `one-to-many` (`Customer.orders`).

@@ -129,8 +129,9 @@ public final class DefinitionGenerator {
                 xml.append("            <many-to-one name=\"").append(attr).append("\" target-entity=\"")
                         .append(pkg).append('.').append(target.entity()).append("\" fetch=\"LAZY\">\n");
                 for (int i = 0; i < fk.columns().size(); i++) {
-                    xml.append("                <join-column name=\"").append(esc(fk.columns().get(i)))
-                            .append("\" referenced-column-name=\"").append(esc(fk.targetColumns().get(i))).append('"')
+                    xml.append("                <join-column name=\"").append(esc(identifier(fk.columns().get(i))))
+                            .append("\" referenced-column-name=\"").append(esc(identifier(fk.targetColumns().get(i))))
+                            .append('"')
                             .append(overlapsKey ? " insertable=\"false\" updatable=\"false\"" : "").append("/>\n");
                 }
                 xml.append("            </many-to-one>\n");
@@ -159,7 +160,7 @@ public final class DefinitionGenerator {
             SchemaModel.Table t = p.table();
             entityTables.put(p.entity(), t.qualifiedName());
             orm.append("\n    <entity class=\"").append(p.entity()).append("\" access=\"VIRTUAL\">\n");
-            orm.append("        <table name=\"").append(esc(t.name())).append('"');
+            orm.append("        <table name=\"").append(esc(identifier(t.name()))).append('"');
             if (qualify && t.schema() != null) {
                 orm.append(" schema=\"").append(esc(t.schema())).append('"');
             }
@@ -194,7 +195,7 @@ public final class DefinitionGenerator {
                 String name = unique(lowerCamel(c.name()), taken, "Value");
                 StringBuilder xml = new StringBuilder("            <").append(element)
                         .append(" name=\"").append(name).append("\" attribute-type=\"").append(type).append("\">");
-                xml.append("<column name=\"").append(esc(c.name())).append('"');
+                xml.append("<column name=\"").append(esc(identifier(c.name()))).append('"');
                 if (type.equals("java.math.BigDecimal") && c.size() > 0) {
                     xml.append(" precision=\"").append(c.size()).append("\" scale=\"").append(c.scale()).append('"');
                 }
@@ -417,6 +418,31 @@ public final class DefinitionGenerator {
         String p = name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
         return p.isEmpty() || !Character.isJavaIdentifierStart(p.charAt(0)) ? "model" : p;
     }
+
+    /**
+     * A table or column name as the mapping writes it: quoted when it is an SQL reserved word, such as
+     * AdventureWorks' {@code SalesTerritory.group}, so that EclipseLink's SQL is valid on every database. A quoted
+     * name keeps the exact case the database reported.
+     */
+    static String identifier(String name) {
+        return RESERVED.contains(name.toUpperCase(Locale.ROOT)) ? "\"" + name + "\"" : name;
+    }
+
+    /** SQL:2016 reserved words that are plausible table or column names. */
+    private static final Set<String> RESERVED = Set.of(
+            "ALL", "ALLOCATE", "ALTER", "AND", "ANY", "ARRAY", "AS", "ASYMMETRIC", "AT", "AUTHORIZATION", "BEGIN",
+            "BETWEEN", "BOTH", "BY", "CALL", "CASE", "CAST", "CHECK", "COLLATE", "COLUMN", "CONDITION", "CONSTRAINT",
+            "CREATE", "CROSS", "CUBE", "CURRENT", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
+            "CURRENT_USER", "CURSOR", "CYCLE", "DATE", "DAY", "DEFAULT", "DELETE", "DESCRIBE", "DISTINCT", "DO",
+            "DROP", "EACH", "ELSE", "END", "ESCAPE", "EXCEPT", "EXEC", "EXISTS", "FALSE", "FETCH", "FILTER", "FOR",
+            "FOREIGN", "FROM", "FULL", "FUNCTION", "GET", "GRANT", "GROUP", "GROUPING", "HAVING", "HOUR",
+            "IDENTITY", "IN", "INNER", "INSERT", "INTERSECT", "INTERVAL", "INTO", "IS", "JOIN", "LATERAL",
+            "LEADING", "LEFT", "LIKE", "LIMIT", "LOCAL", "MATCH", "MERGE", "MINUTE", "MONTH", "NATURAL", "NEW",
+            "NO", "NOT", "NULL", "OF", "OFFSET", "OLD", "ON", "ONLY", "OR", "ORDER", "OUTER", "OVER", "PARTITION",
+            "PRIMARY", "RANGE", "REFERENCES", "RETURNING", "RIGHT", "ROLLUP", "ROW", "ROWS", "SECOND", "SELECT",
+            "SESSION_USER", "SET", "SOME", "SYMMETRIC", "SYSTEM_USER", "TABLE", "THEN", "TIME", "TIMESTAMP", "TO",
+            "TRAILING", "TRUE", "UNION", "UNIQUE", "UNKNOWN", "UPDATE", "USER", "USING", "VALUE", "VALUES",
+            "WHEN", "WHERE", "WINDOW", "WITH", "YEAR");
 
     private static String esc(String s) {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");

@@ -1047,9 +1047,12 @@ public final class NamedWrite {
         }
         ReadAllQuery q = new ReadAllQuery(d.getJavaClass(), eb);
         q.setSelectionCriteria(where);
-        // The version check compares against the database, never a cached copy.
+        // The version check compares against the database, never a cached copy. Only this row is refreshed:
+        // cascading the refresh would walk every relationship reachable from it, which on a large schema
+        // (AdventureWorks: an order's territory, its sales people, their stores' customers and all of their
+        // orders) reads much of the database for one write.
         q.refreshIdentityMapResult();
-        q.cascadeAllParts();
+        q.dontCascadeParts();
         return JpaHelper.createQuery(q, em).setMaxResults(1).getResultList();
     }
 
