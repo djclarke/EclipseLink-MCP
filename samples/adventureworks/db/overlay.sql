@@ -106,9 +106,22 @@ ORDER BY s.salesorderid, l.productid;
 -- 4. Database accounts. The MCP server never connects as the owner.
 -- mcp_adventureworks: the server's one account, shared by every caller. It reads everything and may change
 -- only what the write operations change; which callers get those operations is the server's decision.
-CREATE ROLE mcp_adventureworks LOGIN PASSWORD 'adventureworks';
 -- mcp_reader: read-only, for design time (init, edit and shape.sh never need to write).
-CREATE ROLE mcp_reader LOGIN PASSWORD 'reader';
+-- Roles belong to the server, not the database: they survive a dropped database, and the Chinook sample
+-- uses an mcp_reader with the same password. Create them only if they are missing, so the install can be
+-- run again on the same server.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mcp_adventureworks') THEN
+        CREATE ROLE mcp_adventureworks;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mcp_reader') THEN
+        CREATE ROLE mcp_reader;
+    END IF;
+END
+$$;
+ALTER ROLE mcp_adventureworks LOGIN PASSWORD 'adventureworks';
+ALTER ROLE mcp_reader LOGIN PASSWORD 'reader';
 ALTER ROLE mcp_reader SET default_transaction_read_only = on;
 
 GRANT USAGE ON SCHEMA person, humanresources, production, purchasing, sales TO mcp_reader, mcp_adventureworks;

@@ -129,15 +129,43 @@ The 1.4.5 data: 275 artists, 347 albums, 3,503 tracks in 25 genres and 5 media t
 
 ## Set it up
 
+You need Java 21 and Maven 3.9.10 or later (on a Mac: `brew install openjdk@21 maven`), and either a PostgreSQL
+server or nothing at all (H2, below). Run every command from the repository root, in one terminal (bash or zsh).
+Once it is set up, go to [Run it](#run-it); [How it was made](#how-it-was-made) is background.
+
 ### PostgreSQL
 
-Any PostgreSQL server you can reach as a superuser. From the repository root:
+**1. Build the server and fetch the PostgreSQL driver**, which the runtime does not bundle:
 
 ```sh
-mvn package -DskipTests                                    # builds target/eclipselink-mcp-server-*.jar
-PGHOST=localhost PGUSER=postgres sh samples/chinook/db/setup-postgresql.sh
-mvn dependency:copy -Dartifact=org.postgresql:postgresql:42.7.4 -DoutputDirectory=target/chinook/drivers
+mvn -q package -DskipTests                                 # builds target/eclipselink-mcp-server-*.jar
+mvn -q dependency:copy -Dartifact=org.postgresql:postgresql:42.7.4 -DoutputDirectory=target/chinook/drivers
 ```
+
+**2. A PostgreSQL server you can reach as a superuser**, version 14 or later, with `psql` on your `PATH`. Any of:
+
+```sh
+# Homebrew on a Mac. The superuser is your macOS user, so leave out PGUSER below.
+brew install postgresql@16
+brew services start postgresql@16
+export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+
+# Docker. The superuser is postgres, with the password you choose here.
+docker run -d --name chinook-db -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
+export PGUSER=postgres PGPASSWORD=postgres
+```
+
+The Docker container has its own `psql`, but the script runs yours, so install one too (on a Mac,
+`brew install libpq` and put `$(brew --prefix libpq)/bin` on your `PATH`).
+
+**3. Create the database**, about five seconds:
+
+```sh
+PGHOST=localhost sh samples/chinook/db/setup-postgresql.sh
+```
+
+Run it again whenever you want the shipped data back. The AdventureWorks sample can share the server: both use an
+`mcp_reader` account with the same password, which the scripts create only if it is missing.
 
 `setup-postgresql.sh`:
 
@@ -205,25 +233,39 @@ DRIVERS=target/chinook/drivers sh samples/chinook/shape-music-store.sh    # writ
 ```sh
 export CHINOOK_DB_PASSWORD=store        # mcp_store: the account allowed only the sample's changes
 JAR=$(ls target/eclipselink-mcp-server-*.jar | grep -v original)
-java -jar $JAR --definition samples/chinook/music-store --drivers target/chinook/drivers --validate
-java -jar $JAR call --definition samples/chinook/music-store --drivers target/chinook/drivers \
+java -jar "$JAR" --definition samples/chinook/music-store --drivers target/chinook/drivers --validate
+java -jar "$JAR" call --definition samples/chinook/music-store --drivers target/chinook/drivers \
   report_top_artists '{"pageSize":5}'
 ```
 
-Claude Desktop or Claude Code (`mcpServers`), with full paths:
+`report_top_artists` prints the five artists with the most tracks, Iron Maiden first with 213. Next, try the
+read tools in [What agents can do](#what-agents-can-do), and the writes, conflicts and constraint violation in
+[Write](#write); they run as dry runs unless you add `--commit`. After a `--commit`, run step 3 again to reset.
+
+**Claude Desktop:** add the server to `~/Library/Application Support/Claude/claude_desktop_config.json` (Settings,
+Developer, Edit Config), then quit and reopen Claude Desktop. Desktop does not read your shell's `PATH`, so give
+the full path to `java` (`/opt/homebrew/opt/openjdk@21/bin/java` with Homebrew), the JAR, the definition and the
+drivers:
 
 ```json
 {
   "mcpServers": {
     "chinook": {
-      "command": "java",
-      "args": ["-jar", "/path/to/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar",
-               "--definition", "/path/to/eclipselink-mcp/samples/chinook/music-store",
-               "--drivers", "/path/to/eclipselink-mcp/target/chinook/drivers"],
+      "command": "/opt/homebrew/opt/openjdk@21/bin/java",
+      "args": ["-jar", "/path/to/EclipseLink-MCP/target/eclipselink-mcp-server-0.1.0-SNAPSHOT.jar",
+               "--definition", "/path/to/EclipseLink-MCP/samples/chinook/music-store",
+               "--drivers", "/path/to/EclipseLink-MCP/target/chinook/drivers"],
       "env": { "CHINOOK_DB_PASSWORD": "store" }
     }
   }
 }
+```
+
+**Claude Code**, from the repository root:
+
+```sh
+claude mcp add chinook -e CHINOOK_DB_PASSWORD=store -- java -jar "$PWD/$JAR" \
+  --definition "$PWD/samples/chinook/music-store" --drivers "$PWD/target/chinook/drivers"
 ```
 
 The descriptor defaults to `jdbc:postgresql://localhost:5432/chinook` as `mcp_store`; `CHINOOK_DB_URL` and
@@ -281,13 +323,13 @@ What the operations show:
 `call` runs write tools as a dry run, rolled back, unless you pass `--commit`:
 
 ```sh
-C="java -jar $JAR call --definition samples/chinook/music-store --drivers target/chinook/drivers"
-$C create_invoice '{"customer":2,"lines":[{"track":1,"quantity":1},{"track":2,"quantity":2}]}'
-$C update_track '{"id":1,"version":1,"unitPrice":"1.29"}'          # new price; sold lines keep 0.99
-$C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":1}'
-$C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":0}'   # CONFLICT: read the playlist again
-$C remove_playlist_track '{"id":{"playlistId":18,"trackId":597},"playlistVersion":1}'
-$C delete_playlist '{"id":18,"version":1}'                          # CONSTRAINT_VIOLATION: it has a track
+C() { java -jar "$JAR" call --definition samples/chinook/music-store --drivers target/chinook/drivers "$@"; }   # bash and zsh
+C create_invoice '{"customer":2,"lines":[{"track":1,"quantity":1},{"track":2,"quantity":2}]}'
+C update_track '{"id":1,"version":1,"unitPrice":"1.29"}'          # new price; sold lines keep 0.99
+C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":1}'
+C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":0}'   # CONFLICT: read the playlist again
+C remove_playlist_track '{"id":{"playlistId":18,"trackId":597},"playlistVersion":1}'
+C delete_playlist '{"id":18,"version":1}'                          # CONSTRAINT_VIOLATION: it has a track
 ```
 
 ### Entity kinds and tenancy
