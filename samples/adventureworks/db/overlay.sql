@@ -47,11 +47,11 @@ ALTER TABLE sales.salesorderdetail
         FOREIGN KEY (specialofferid) REFERENCES sales.specialoffer (specialofferid);
 
 -- 2. Optimistic lock versions. Sales orders already have one (revisionnumber); a customer's email
--- address, the one contact detail order entry may change, gets its own.
+-- address, the one contact detail the write operations change, gets its own.
 ALTER TABLE person.emailaddress ADD COLUMN version integer NOT NULL DEFAULT 1;
 COMMENT ON COLUMN person.emailaddress.version IS 'Optimistic lock version, added for the EclipseLink MCP sample.';
 
--- 3. Open orders. Every historical order is shipped (status 5), so order entry has nothing to work on.
+-- 3. Open orders. Every historical order is shipped (status 5), so there is nothing to place lines on or ship.
 -- Two in-process orders (status 1) per sales territory, each for a store customer that has ordered before,
 -- with that customer's latest addresses and ship method and two products from that order, at today's list
 -- price, no discount, no tax or freight.
@@ -103,20 +103,21 @@ FROM seed_line l
 JOIN seed_order s ON s.seq = l.seq
 ORDER BY s.salesorderid, l.productid;
 
--- 4. Database accounts. The MCP servers never connect as the owner.
--- mcp_reader: read-only, for the sales definition and for init.
+-- 4. Database accounts. The MCP server never connects as the owner.
+-- mcp_adventureworks: the server's one account, shared by every caller. It reads everything and may change
+-- only what the write operations change; which callers get those operations is the server's decision.
+CREATE ROLE mcp_adventureworks LOGIN PASSWORD 'adventureworks';
+-- mcp_reader: read-only, for design time (init, edit and shape.sh never need to write).
 CREATE ROLE mcp_reader LOGIN PASSWORD 'reader';
 ALTER ROLE mcp_reader SET default_transaction_read_only = on;
--- mcp_order_entry: reads everything, and may change only what order entry's operations change.
-CREATE ROLE mcp_order_entry LOGIN PASSWORD 'orderentry';
 
-GRANT USAGE ON SCHEMA person, humanresources, production, purchasing, sales TO mcp_reader, mcp_order_entry;
+GRANT USAGE ON SCHEMA person, humanresources, production, purchasing, sales TO mcp_reader, mcp_adventureworks;
 GRANT SELECT ON ALL TABLES IN SCHEMA person, humanresources, production, purchasing, sales
-    TO mcp_reader, mcp_order_entry;
-GRANT INSERT, UPDATE ON sales.salesorderheader, sales.salesorderdetail TO mcp_order_entry;
-GRANT UPDATE ON person.emailaddress TO mcp_order_entry;
+    TO mcp_reader, mcp_adventureworks;
+GRANT INSERT, UPDATE ON sales.salesorderheader, sales.salesorderdetail TO mcp_adventureworks;
+GRANT UPDATE ON person.emailaddress TO mcp_adventureworks;
 GRANT USAGE ON SEQUENCE sales.salesorderheader_salesorderid_seq, sales.salesorderdetail_salesorderdetailid_seq
-    TO mcp_order_entry;
+    TO mcp_adventureworks;
 
 COMMIT;
 

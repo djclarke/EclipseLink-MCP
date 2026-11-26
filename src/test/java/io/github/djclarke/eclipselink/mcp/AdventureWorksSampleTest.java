@@ -18,7 +18,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -34,36 +33,41 @@ import io.github.djclarke.eclipselink.mcp.tools.ToolException;
 import io.github.djclarke.eclipselink.mcp.tools.ToolService;
 
 /**
- * The AdventureWorks sample (samples/adventureworks). The model check runs in every build. The database tests
+ * The AdventureWorks sample (samples/adventureworks): one definition, read-only for callers without writes
+ * and with four write tools for those allowed them. The offline check runs in every build. The database tests
  * run only when {@code AW_DB_URL} points at the sample's PostgreSQL database (its README), with the PostgreSQL
  * driver in samples/adventureworks/drivers: they change data, so reset the database afterwards.
  */
 class AdventureWorksSampleTest {
 
     static final Path SAMPLE = Path.of("samples/adventureworks");
+    static final Path DEFINITION = SAMPLE.resolve("definition");
 
     @Test
-    void bothDefinitionsShareOneModel() throws Exception {
-        assertEquals(Files.readString(SAMPLE.resolve("analyst/model/eclipselink-orm.xml")),
-                Files.readString(SAMPLE.resolve("order-entry/model/eclipselink-orm.xml")),
-                "shape.sh writes the same model to both definitions");
+    void oneDefinitionWithFourWriteOperations() {
+        var definition = new DefinitionLoader(Map.of("AW_DB_PASSWORD", "unused")::get).load(DEFINITION);
+        assertEquals(Set.of("create_sales_order", "update_sales_order", "add_order_line", "update_email_address"),
+                Set.copyOf(definition.writes().stream().map(w -> w.name()).toList()));
+        assertEquals(Set.of("SalesOrderHeader", "SalesOrderDetail", "EmailAddress"),
+                definition.descriptor().tools().writes().keySet());
     }
 
     @Nested
     @EnabledIfEnvironmentVariable(named = "AW_DB_URL", matches = ".+")
     class OnPostgreSQL {
 
-        static ModelRuntime start(String definition) {
+        static ModelRuntime start() {
             Map<String, String> env = Map.of("AW_DB_URL", System.getenv("AW_DB_URL"),
-                    "AW_READER_PASSWORD", "reader", "AW_ORDER_ENTRY_PASSWORD", "orderentry");
-            return ModelRuntime.start(new DefinitionLoader(env::get).load(SAMPLE.resolve(definition)));
+                    "AW_DB_PASSWORD", "adventureworks");
+            return ModelRuntime.start(new DefinitionLoader(env::get).load(DEFINITION));
         }
 
         @Test
-        void analystReportsAndQueries() {
-            try (ModelRuntime model = start("analyst")) {
-                ToolService tools = new ToolService(model);
-                assertTrue(tools.exposedWrites().isEmpty(), "read-only");
+        void readOnlyCallerGetsReportsAndQueries() {
+            try (ModelRuntime model = start()) {
+                ToolService tools = new ToolService(model, false, false); // --writes none: a read-only caller
+                assertTrue(tools.exposedWrites().isEmpty(), "no write tools");
+                assertFalse(tools.tools().stream().anyMatch(t -> t.name().equals("create_sales_order")));
                 List<?> rows = (List<?>) tools.call("report_sales_by_territory",
                         Map.of("fromDate", "2024-07-01T00:00:00", "toDate", "2025-07-01T00:00:00")).get("rows");
                 assertEquals(10, rows.size(), "one row per territory");
@@ -81,8 +85,8 @@ class AdventureWorksSampleTest {
 
         @Test
         void placeAnOrderThenShipItWhileALineIsAdded() {
-            try (ModelRuntime model = start("order-entry")) {
-                ToolService tools = new ToolService(model);
+            try (ModelRuntime model = start()) {
+                ToolService tools = new ToolService(model); // a caller allowed to write
                 assertEquals(Set.of("create_sales_order", "update_sales_order", "add_order_line",
                                 "update_email_address"),
                         Set.copyOf(tools.exposedWrites().stream().map(w -> w.definition().name()).toList()));

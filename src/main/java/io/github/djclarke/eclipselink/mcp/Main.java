@@ -62,6 +62,7 @@ public final class Main {
         Path definitionDir = null;
         Path driversDir = null;
         boolean validate = false;
+        boolean writes = true;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--definition" -> definitionDir = i + 1 < args.length ? Path.of(args[++i]) : null;
@@ -73,6 +74,15 @@ public final class Main {
                     driversDir = Path.of(args[++i]);
                 }
                 case "--validate" -> validate = true;
+                case "--writes" -> {
+                    String mode = i + 1 < args.length ? args[++i] : "";
+                    if (!mode.equals("none") && !mode.equals("definition")) {
+                        System.err.println("--writes takes none or definition");
+                        usage(System.err);
+                        System.exit(2);
+                    }
+                    writes = mode.equals("definition");
+                }
                 case "--help", "-h" -> {
                     usage(System.out);
                     return;
@@ -96,7 +106,7 @@ public final class Main {
             definition = new DefinitionLoader().load(definitionDir);
             configureLogging(definition.descriptor().logging().level());
             model = ModelRuntime.start(definition, driversDir);
-            tools = new ToolService(model);
+            tools = new ToolService(model, false, writes);
         } catch (DefinitionException e) {
             System.err.println("Invalid server definition: " + e.getMessage());
             System.exit(1);
@@ -129,7 +139,8 @@ public final class Main {
                         : "through " + lock.through().getAttributeName() + " -> " + lock.holder().getAlias() + "."
                         + lock.versionAttribute()) + ")");
             });
-            out.println("  writable: " + (writable.isEmpty() ? "none (read-only)" : String.join("; ", writable)));
+            out.println("  writable: " + (writable.isEmpty() ? "none (read-only)" : !writes
+                    ? "off (--writes none): " + String.join("; ", writable) : String.join("; ", writable)));
             out.println("  tools:    " + String.join(", ", tools.tools().stream().map(ToolService.Tool::name).toList()));
             model.close();
             return;
@@ -159,9 +170,10 @@ public final class Main {
     }
 
     private static void usage(PrintStream out) {
-        out.println("Usage: java -jar eclipselink-mcp-server.jar --definition <dir> [--drivers <dir>] [--validate]");
+        out.println("Usage: java -jar eclipselink-mcp-server.jar --definition <dir> [--drivers <dir>] [--writes none|definition] [--validate]");
         out.println("  --definition <dir>  server definition directory (contains eclipselink-mcp.yaml)");
         out.println("  --drivers <dir>     JDBC driver JARs to load (default: connection.drivers, or <definition>/drivers)");
+        out.println("  --writes <mode>     definition (default): the write tools the definition enables; none: read-only");
         out.println("  --validate          load and check the definition against the database, then exit");
         out.println("Design time: init (generate from tables), edit (change the model), call (run one tool):");
         out.println("  ... init --help | edit --help | call --definition <dir> <tool> '<json>'");

@@ -2,7 +2,7 @@
 
 | Sample | Database | What it is |
 |---|---|---|
-| [adventureworks](adventureworks) | PostgreSQL (Docker) | Microsoft's AdventureWorks: a read-only analyst server and an order entry server with writes, over a 68-table business schema. Self-contained: see its [README](adventureworks/README.md). |
+| [adventureworks](adventureworks) | PostgreSQL (Docker) | Microsoft's AdventureWorks: one server over a 68-table business schema, read-only for most callers and with order entry writes for those allowed them. Self-contained: see its [README](adventureworks/README.md). |
 | sales-db-generated, sales-db, order-desk | H2, built by `mvn test` | The folders described below. |
 
 ## The H2 samples

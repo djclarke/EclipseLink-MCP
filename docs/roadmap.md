@@ -64,6 +64,7 @@ Phases in order; sizes are rough working days.
 | S3 | AdventureWorks history: an EclipseLink-maintained history of sales orders for as-of reads | With history support | Its own effective-dated tables are queryable today. |
 | S4 | Publish the AdventureWorks database image (for example to GitHub Container Registry) so `docker compose up` needs no build | Packaging | Built by CI from `db/`. |
 | S5 | Run the AdventureWorks tests in CI against the image | With S4 | Today they run when `AW_DB_URL` is set. |
+| S6 | AdventureWorks over HTTP with OAuth: a Keycloak realm with a reader and an order entry user, only the second holding `adventureworks:write` | With H2 | One deployment; on stdio today, `--writes none` gives the read-only view. |
 
 ## Other later milestones
 

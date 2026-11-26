@@ -13,6 +13,7 @@
 package io.github.djclarke.eclipselink.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.file.Path;
@@ -55,6 +56,18 @@ class OrderDeskSampleTest {
         assertEquals(java.util.Set.of("create_customer", "update_customer", "create_order", "update_order",
                         "add_order_line"),
                 java.util.Set.copyOf(tools.exposedWrites().stream().map(w -> w.definition().name()).toList()));
+    }
+
+    @Test
+    void writesNoneRunsTheSameDefinitionReadOnly() {
+        ToolService readOnly = new ToolService(model, false, false);
+        assertEquals(List.of(), List.copyOf(readOnly.exposedWrites()), "--writes none");
+        List<String> names = readOnly.tools().stream().map(ToolService.Tool::name).toList();
+        assertEquals(tools.tools().size() - 5, names.size(), "every tool but the five writes: " + names);
+        assertFalse(names.contains("update_customer"), names.toString());
+        ToolException e = assertThrows(ToolException.class, () -> readOnly.call("update_customer",
+                Map.of("id", 3, "version", 1, "email", "ap@initech.example")));
+        assertEquals(ToolException.Code.INVALID_PARAMETER, e.code(), e.getMessage());
     }
 
     @Test

@@ -25,7 +25,7 @@ COPY --chown=postgres:postgres install.sh overlay.sql /aw/
 RUN mkdir -p "$PGDATA" && chown postgres:postgres "$PGDATA"
 USER postgres
 # The owner account (postgres) has no password and can only connect inside the container. Clients use the
-# sample's accounts (mcp_reader, mcp_order_entry; see overlay.sql) over TCP.
+# sample's accounts (mcp_adventureworks, mcp_reader; see overlay.sql) over TCP.
 RUN initdb --username=postgres --auth-local=trust --auth-host=scram-sha-256 -D "$PGDATA" > /dev/null \
  && pg_ctl -D "$PGDATA" -o "-c listen_addresses=''" -w start > /dev/null \
  && PGHOST=/var/run/postgresql PGUSER=postgres /aw/install.sh \
