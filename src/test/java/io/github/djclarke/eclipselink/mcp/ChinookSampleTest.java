@@ -173,6 +173,14 @@ class ChinookSampleTest {
         }
 
         @Test
+        void bestSellingArtistsInOneGenre() {
+            List<?> rows = (List<?>) call("report_best_selling_artists", Map.of("fromDate", "2024-01-01T00:00:00",
+                    "toDate", "2026-01-01T00:00:00", "genre", "Rock", "pageSize", 2)).get("rows");
+            assertEquals(Map.of("artistId", 150, "artist", "U2", "copiesSold", 49), number(rows.get(0)));
+            assertEquals("Led Zeppelin", ((Map<?, ?>) rows.get(1)).get("artist"));
+        }
+
+        @Test
         void salesBySupportRep() {
             List<?> rows = (List<?>) call("report_sales_by_support_rep",
                     Map.of("fromDate", "2021-01-01T00:00:00", "toDate", "2026-01-01T00:00:00")).get("rows");
