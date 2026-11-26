@@ -86,18 +86,26 @@ public final class ToolService {
     private final Map<String, Lock> locks = new LinkedHashMap<>();
     private final Map<String, Tool> tools = new LinkedHashMap<>();
     private final boolean dryRun;
+    private final boolean writesEnabled;
 
     public ToolService(ModelRuntime model) {
         this(model, false);
     }
 
+    public ToolService(ModelRuntime model, boolean dryRun) {
+        this(model, dryRun, true);
+    }
+
     /**
      * @param dryRun write tools flush and then roll back instead of committing (the {@code call} command's
      *               default, docs 7.5)
+     * @param writesEnabled false to expose no write tools whatever {@code tools.writes} allows: the runtime's
+     *               {@code --writes none} (docs 3.5.5), the same deployment run read-only
      */
-    public ToolService(ModelRuntime model, boolean dryRun) {
+    public ToolService(ModelRuntime model, boolean dryRun, boolean writesEnabled) {
         this.model = model;
         this.dryRun = dryRun;
+        this.writesEnabled = writesEnabled;
         Descriptor d = model.definition().descriptor();
         this.limits = d.limits();
         this.audit = d.logging().audit();
@@ -200,7 +208,7 @@ public final class ToolService {
      * operation's action (none by default), or every one for the dry-run service.
      */
     public Collection<NamedWrite> exposedWrites() {
-        return writes.values().stream().filter(w -> dryRun || allowed(w)).toList();
+        return writes.values().stream().filter(w -> dryRun || writesEnabled && allowed(w)).toList();
     }
 
     private boolean allowed(NamedWrite w) {

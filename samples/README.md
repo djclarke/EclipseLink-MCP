@@ -1,5 +1,12 @@
 # Samples
 
+| Sample | Database | What it is |
+|---|---|---|
+| [adventureworks](adventureworks) | PostgreSQL (Docker) | Microsoft's AdventureWorks: one server over a 68-table business schema, read-only for most callers and with order entry writes for those allowed them. Self-contained: see its [README](adventureworks/README.md). |
+| sales-db-generated, sales-db, order-desk | H2, built by `mvn test` | The folders described below. |
+
+## The H2 samples
+
 Server definitions over the same sample H2 database, a before and after of the
 [configure-server-from-schema](../skills/configure-server-from-schema/SKILL.md) skill.
 `mvn test` creates the database at `target/test-db/sales` (or `mvn -Psample-db process-test-resources` without the tests).

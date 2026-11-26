@@ -16,6 +16,7 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -188,13 +189,33 @@ public final class SchemaReader {
                 if (!f.name().equals(rs.getString("TABLE_NAME"))) {
                     continue;
                 }
-                out.add(new SchemaModel.Column(rs.getString("COLUMN_NAME"), rs.getInt("DATA_TYPE"),
+                out.add(new SchemaModel.Column(rs.getString("COLUMN_NAME"),
+                        jdbcType(rs.getInt("DATA_TYPE"), sourceDataType(rs)),
                         rs.getString("TYPE_NAME"), rs.getInt("COLUMN_SIZE"), rs.getInt("DECIMAL_DIGITS"),
                         rs.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls, blankToNull(rs.getString("REMARKS")),
                         "YES".equalsIgnoreCase(autoIncrement(rs))));
             }
         }
         return out;
+    }
+
+    /**
+     * The JDBC type a column is mapped by. A distinct type (a PostgreSQL {@code DOMAIN} such as
+     * AdventureWorks' {@code Phone} or {@code Flag}) is mapped by the type it is based on, which the driver
+     * reports as {@code SOURCE_DATA_TYPE}.
+     */
+    public static int jdbcType(int dataType, Integer sourceDataType) {
+        return dataType == Types.DISTINCT && sourceDataType != null ? sourceDataType : dataType;
+    }
+
+    /** {@code SOURCE_DATA_TYPE}, or null when the driver reports none. */
+    private static Integer sourceDataType(ResultSet rs) {
+        try {
+            int t = rs.getInt("SOURCE_DATA_TYPE");
+            return rs.wasNull() ? null : t;
+        } catch (SQLException e) {
+            return null;
+        }
     }
 
     /** {@code IS_AUTOINCREMENT}, which older drivers do not report. */
@@ -207,6 +228,13 @@ public final class SchemaReader {
     }
 
     private List<String> primaryKey(Found f) throws SQLException {
+        // A key named in the selection wins over the declared one: a table may declare a composite key where
+        // one unique column, such as an identity, is the simpler key (AdventureWorks' SalesOrderDetail).
+        for (Map.Entry<String, List<String>> e : selection.keys().entrySet()) {
+            if (e.getKey().equalsIgnoreCase(f.name()) || e.getKey().equalsIgnoreCase(f.key().toString())) {
+                return e.getValue().stream().map(this::identifier).toList();
+            }
+        }
         TreeMap<Short, String> byPosition = new TreeMap<>();
         try (ResultSet rs = meta.getPrimaryKeys(f.catalog(), f.schema(), f.name())) {
             while (rs.next()) {
@@ -215,11 +243,6 @@ public final class SchemaReader {
         }
         if (!byPosition.isEmpty()) {
             return List.copyOf(byPosition.values());
-        }
-        for (Map.Entry<String, List<String>> e : selection.keys().entrySet()) {
-            if (e.getKey().equalsIgnoreCase(f.name()) || e.getKey().equalsIgnoreCase(f.key().toString())) {
-                return e.getValue().stream().map(this::identifier).toList();
-            }
         }
         warnings.add(f.key() + " (" + f.type() + ") has no primary key; skipped. Give one under 'keys' in the "
                 + "selection to include it.");
