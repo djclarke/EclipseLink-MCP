@@ -74,6 +74,13 @@ class AdventureWorksSampleTest {
                 Map<?, ?> top = (Map<?, ?>) rows.get(0);
                 assertEquals("North America", top.get("territoryGroup"), "a reserved word column (\"group\")");
 
+                List<?> channels = (List<?>) tools.call("report_sales_by_channel", Map.of("fromDate",
+                        "2025-04-01T00:00:00", "toDate", "2025-07-01T00:00:00", "territory", "France")).get("rows");
+                assertEquals(2, channels.size(), "online and store orders (SCENARIOS.md, scenario 1)");
+                List<?> stores = (List<?>) tools.call("report_store_sales", Map.of("fromDate", "2025-01-01T00:00:00",
+                        "toDate", "2025-04-01T00:00:00", "territory", "France")).get("rows");
+                assertEquals(30, stores.size(), "30 French stores ordered in Q1 2025");
+
                 List<?> prices = (List<?>) tools.call("query_list_price_history", Map.of("productId", 707)).get("items");
                 assertEquals(3, prices.size());
                 assertEquals(null, ((Map<?, ?>) prices.get(2)).get("endDate"), "the current price");

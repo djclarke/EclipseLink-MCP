@@ -15,7 +15,7 @@ reach:
 
 | Caller | Tools |
 |---|---|
-| Anyone allowed to connect | Browse 20 entities; reports `sales_by_territory` and `top_products`; queries `open_orders`, `list_price_history` and `customer_addresses` |
+| Anyone allowed to connect | Browse 20 entities; reports `sales_by_territory`, `sales_by_channel`, `store_sales` and `top_products`; queries `open_orders`, `list_price_history` and `customer_addresses` |
 | A caller allowed to write | The same, plus `create_sales_order` (with its lines), `add_order_line`, `update_sales_order` (approve, ship or cancel) and `update_email_address` |
 
 The definition's `tools.writes` is the most any caller can do. Who gets the write tools is decided per caller:
@@ -31,6 +31,61 @@ The definition's `tools.writes` is the most any caller can do. Who gets the writ
 Either way the server connects as one database account, `mcp_adventureworks`, shared by every caller. It
 can read every table and change only what the write operations change, so the database enforces the
 ceiling too.
+
+### How the pieces fit
+
+```mermaid
+flowchart LR
+    subgraph agents["Agents"]
+        analyst["Sales analyst's agent<br/>token without write scope"]
+        desk["Order desk agent<br/>token with adventureworks:write"]
+        local["Claude Desktop or Claude Code<br/>stdio, no token"]
+    end
+
+    keycloak["Keycloak<br/>OAuth authorization server:<br/>users, roles, scopes"]
+
+    subgraph server["EclipseLink MCP server, one deployment"]
+        http["Streamable HTTP on Jetty<br/>stateless"]
+        jwt["JWT validation, Nimbus:<br/>issuer, audience, scope"]
+        tools["Tools for this caller<br/>reads for everyone,<br/>writes only with the scope<br/>(stdio: --writes)"]
+        jpa["EclipseLink JPA<br/>mapped model, optimistic locks,<br/>refresh past the cache"]
+        http --> jwt --> tools --> jpa
+    end
+
+    db[("PostgreSQL<br/>adventureworks")]
+
+    analyst -- "1 sign in" --> keycloak
+    desk -- "1 sign in" --> keycloak
+    keycloak -. "2 access token (JWT)" .-> analyst
+    keycloak -. "2 access token (JWT)" .-> desk
+    analyst -- "3 MCP over HTTPS,<br/>Bearer token" --> http
+    desk -- "3 MCP over HTTPS,<br/>Bearer token" --> http
+    jwt -. "signing keys (JWKS)" .-> keycloak
+    local -- "MCP over stdio" --> tools
+    jpa -- "JDBC, one pool,<br/>account mcp_adventureworks" --> db
+```
+
+1. A person signs in to Keycloak through their agent's client. Keycloak issues an access token, a signed JWT,
+   whose scopes say what they may do: the analyst's has no write scope, the order desk's has
+   `adventureworks:write`.
+2. The agent sends each MCP request over HTTPS with the token. The server checks the signature against
+   Keycloak's published keys, and the issuer, audience and expiry, then lists and allows only the tools that
+   caller's scopes permit. It keeps no session, so any number of instances can run behind a load balancer.
+3. Every caller's queries and writes go through one EclipseLink model and one connection pool, as the database
+   account `mcp_adventureworks`. Writes carry the version they read and fail with `CONFLICT` if someone changed
+   the row since.
+4. On stdio there is no token: the person who starts the server picks `--writes none` or `--writes definition`.
+
+Today the server runs on stdio. The HTTP transport, the OAuth checks and a Compose file with a Keycloak realm
+holding one user of each kind are the next milestone (roadmap H1 to H4 and S6).
+
+## Agentic scenarios
+
+[SCENARIOS.md](SCENARIOS.md) walks through five tasks an agent would do with this server, each with the
+user's prompt, the tools called in order, the result and what it shows: an analyst finding out why France's
+sales dipped, an order desk handling a customer's change request, the same request when a colleague changed
+the order first (`CONFLICT`, forced refresh, decide with the user), a pricing review, and an analyst asking
+for a change they are not allowed to make.
 
 ## Run it
 

@@ -13,7 +13,7 @@ This sample stands on its own: everything it uses is in this folder, plus the ru
 | [db/chinook-mcp-h2.sql](db/chinook-mcp-h2.sql) | The same changes for the H2 copy the tests build |
 | [chinook-generated](chinook-generated) | The raw `init` output for all 11 tables, untouched. A golden test keeps it current. |
 | [shape-music-store.sh](shape-music-store.sh) | The validated `edit` commands that turn that output into the music-store model |
-| [music-store](music-store) | The finished server: the shaped model, 5 named reports, 4 named queries and 14 write operations |
+| [music-store](music-store) | The finished server: the shaped model, 6 named reports, 4 named queries and 14 write operations |
 
 ## The database
 
@@ -281,6 +281,7 @@ The four built-in tools work on every entity: `list_entities`, `describe_entity`
 | Tool | Answers |
 |---|---|
 | `report_top_artists` | Artists with the most tracks (`pageSize` for a top N) |
+| `report_best_selling_artists` | Copies sold per artist for a date range, optionally one `genre` |
 | `report_album_summary` | Per album: tracks, total and average length, total size; optionally one `genre` |
 | `report_sales_by_country` | Invoices and sales per billing country, for a date range |
 | `report_sales_by_genre` | Copies sold per genre, for a date range |
@@ -344,6 +345,13 @@ database on each call, which is always safe.
 | Customer, Invoice, Artist, Album, Track, Playlist, PlaylistTrack | `writable` | Agents change them through this server |
 
 Chinook is one store, so nothing is multitenant.
+
+## Agentic scenarios
+
+[SCENARIOS.md](SCENARIOS.md) walks through five tasks an agent would do for the store, each with the user's
+prompt, the tools called in order, the result and what it shows: curating a playlist from the best-selling
+artists, two editors changing the same playlist (`CONFLICT`, refresh, decide with the user), a customer buying
+the rest of an album, a customer charged twice, and a sales manager's review of the support team.
 
 ## The SQLite tutorial, lesson by lesson
 
