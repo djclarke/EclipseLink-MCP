@@ -72,7 +72,8 @@ Settings: `AW_DB_URL` (default `jdbc:postgresql://localhost:5432/adventureworks`
 `mcp_adventureworks`) and `AW_DB_PASSWORD`.
 
 **Reset** the data after a demo: `docker compose up -d --force-recreate`. The data is part of the image,
-so every new container starts from the same state.
+so every new container starts from the same state. On your own PostgreSQL, drop the database and install it
+again: `dropdb adventureworks && samples/adventureworks/db/install.sh` (the accounts are kept).
 
 ## Things to try
 
@@ -85,10 +86,10 @@ so every new container starts from the same state.
 order 75124 at revision 1. B ships it; A then adds a line with the revision it read:
 
 ```sh
-call="java -jar $JAR call --definition samples/adventureworks/definition"
-$call --commit update_sales_order \
+call() { java -jar "$JAR" call --definition samples/adventureworks/definition "$@"; }   # works in bash and zsh
+call --commit update_sales_order \
   '{"id":75124,"revisionNumber":1,"status":5,"shipDate":"2026-12-01T10:00:00"}'   # B ships: revision 2
-$call add_order_line '{"salesOrder":75124,"salesOrderVersion":1,"product":707,"orderQty":3}'
+call add_order_line '{"salesOrder":75124,"salesOrderVersion":1,"product":707,"orderQty":3}'
 ```
 
 A gets `CONFLICT` with `details.conditionHolds: false`: the order is no longer in process, so this is a
@@ -121,7 +122,10 @@ the database enforces.)
 
 **Your own PostgreSQL instead of Docker:** run `db/install.sh` with `PGHOST`, `PGPORT`, `PGUSER` and
 `PGPASSWORD` set for an account that can create databases and roles. It needs `curl`, `unzip`, `ruby` and
-`psql`.
+`psql`. On a Mac, Homebrew's PostgreSQL works (`brew install postgresql@16`, `brew services start postgresql@16`,
+then put `$(brew --prefix postgresql@16)/bin` on your `PATH`); its superuser is your macOS user, so `PGHOST=localhost`
+is all you need to set. The install can be run again on the same server, and it shares the `mcp_reader` account
+(same password) with the Chinook sample, so both can live on one server.
 
 ## How the model was made
 

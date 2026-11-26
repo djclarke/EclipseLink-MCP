@@ -139,6 +139,10 @@ PGHOST=localhost PGUSER=postgres sh samples/chinook/db/setup-postgresql.sh
 mvn dependency:copy -Dartifact=org.postgresql:postgresql:42.7.4 -DoutputDirectory=target/chinook/drivers
 ```
 
+On Homebrew's PostgreSQL (`brew install postgresql@16`) the superuser is your macOS user, not `postgres`: leave
+out `PGUSER`. The script can be run again to reset the data, and the AdventureWorks sample can share the server:
+both use an `mcp_reader` account with the same password, which the scripts create only if it is missing.
+
 `setup-postgresql.sh`:
 
 1. downloads `Chinook_PostgreSql.sql` from the upstream [v1.4.5 tag](https://github.com/lerocha/chinook-database/tree/v1.4.5)
@@ -281,13 +285,13 @@ What the operations show:
 `call` runs write tools as a dry run, rolled back, unless you pass `--commit`:
 
 ```sh
-C="java -jar $JAR call --definition samples/chinook/music-store --drivers target/chinook/drivers"
-$C create_invoice '{"customer":2,"lines":[{"track":1,"quantity":1},{"track":2,"quantity":2}]}'
-$C update_track '{"id":1,"version":1,"unitPrice":"1.29"}'          # new price; sold lines keep 0.99
-$C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":1}'
-$C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":0}'   # CONFLICT: read the playlist again
-$C remove_playlist_track '{"id":{"playlistId":18,"trackId":597},"playlistVersion":1}'
-$C delete_playlist '{"id":18,"version":1}'                          # CONSTRAINT_VIOLATION: it has a track
+C() { java -jar "$JAR" call --definition samples/chinook/music-store --drivers target/chinook/drivers "$@"; }   # bash and zsh
+C create_invoice '{"customer":2,"lines":[{"track":1,"quantity":1},{"track":2,"quantity":2}]}'
+C update_track '{"id":1,"version":1,"unitPrice":"1.29"}'          # new price; sold lines keep 0.99
+C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":1}'
+C add_playlist_track '{"playlistId":18,"trackId":1,"playlistVersion":0}'   # CONFLICT: read the playlist again
+C remove_playlist_track '{"id":{"playlistId":18,"trackId":597},"playlistVersion":1}'
+C delete_playlist '{"id":18,"version":1}'                          # CONSTRAINT_VIOLATION: it has a track
 ```
 
 ### Entity kinds and tenancy
